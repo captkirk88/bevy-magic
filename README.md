@@ -3,6 +3,9 @@
 `bevy-magic` is a lightweight spellcasting system built on [Bevy](https://bevyengine.org/).
 It provides abstractions for spells, runes, and a simple message-driven cast pipeline.
 
+> [!NOTE]
+> This is mainly for my personal use and future use, however, you may use it in your projects or contribute if you find it useful!
+
 ## Use
 
 ```toml
