@@ -21,9 +21,6 @@ use crate::{
 
 /// Send this message to cast a spell.
 ///
-/// [`execute_cast_spell_events`] picks it up each frame and runs every
-/// [`crate::runes::Rune`] in the spell in declaration order.
-///
 /// # Multi-target support
 ///
 /// `targets` is a `Vec<Entity>`, so a single cast can hit any number of
@@ -55,8 +52,32 @@ struct SpellCastCursor(MessageCursor<CastSpellMessage>);
 /// unloaded.  Keeping one-shot system entities alive between casts means every
 /// rune is initialized exactly once.
 #[derive(Resource, Default)]
-pub struct RuneSystemCache {
-    pub systems: HashMap<(AssetId<Spell>, usize), SystemId<In<CastContext>>>,
+struct RuneSystemCache {
+    systems: HashMap<(AssetId<Spell>, usize), SystemId<In<CastContext>>>,
+}
+
+impl RuneSystemCache {
+    /// Returns the cached `SystemId` for the given spell and rune index, if it
+    /// exists.
+    pub fn get(&self, spell_id: AssetId<Spell>, rune_index: usize) -> Option<SystemId<In<CastContext>>> {
+        self.systems.get(&(spell_id, rune_index)).cloned()
+    }
+
+    /// Inserts a `SystemId` into the cache for the given spell and rune index.
+    pub fn insert(&mut self, spell_id: AssetId<Spell>, rune_index: usize, system_id: SystemId<In<CastContext>>) {
+        self.systems.insert((spell_id, rune_index), system_id);
+    }
+
+    #[allow(unused)]
+    /// Removes the cache entry for the given spell and rune index.
+    pub fn remove(&mut self, spell_id: AssetId<Spell>, rune_index: usize) {
+        self.systems.remove(&(spell_id, rune_index));
+    }
+
+    /// Clears all cache entries for the given spell.
+    pub fn clear_spell(&mut self, spell_id: AssetId<Spell>) {
+        self.systems.retain(|(id, _), _| *id != spell_id);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -93,17 +114,13 @@ impl Default for MagicPlugin {
 
 impl MagicPlugin {
     /// Add a custom rune type to be registered when the plugin initializes.
-    ///
-    /// **`name`** must match the string returned by [`Rune::name`] on the
-    /// corresponding implementation.  The rune type must also implement
-    /// `serde::Deserialize` so it can be loaded from JSON.
-    pub fn register_rune<R>(mut self, name: &'static str) -> Self
+    pub fn rune<R>(mut self) -> Self
     where
-        R: Rune + for<'de> serde::Deserialize<'de> + 'static,
+        R: Rune + TypePath + for<'de> serde::Deserialize<'de> + 'static,
     {
         self.rune_registrations
             .push(Box::new(move |registry: &RuneRegistry| {
-                registry.register::<R>(name);
+                registry.register::<R>();
             }));
         self
     }
@@ -143,14 +160,14 @@ impl Plugin for MagicPlugin {
 /// The orphaned one-shot system entities are left in the world intentionally —
 /// unregistering requires exclusive world access; the footprint of a few extra
 /// ECS entities is negligible and they are never run again.
-pub fn invalidate_spell_cache(
+fn invalidate_spell_cache(
     mut events: MessageReader<AssetEvent<Spell>>,
     mut cache: ResMut<RuneSystemCache>,
 ) {
     for event in events.read() {
         match event {
             AssetEvent::Modified { id } | AssetEvent::Removed { id } => {
-                cache.systems.retain(|(spell_id, _), _| spell_id != id);
+                cache.clear_spell(*id);
             }
             _ => {}
         }
@@ -162,16 +179,6 @@ pub fn invalidate_spell_cache(
 // ---------------------------------------------------------------------------
 
 /// Exclusive-world system that processes every pending [`CastSpellMessage`].
-///
-/// ### Cache miss (first cast after load)
-/// 1. Borrows `Assets<Spell>` + `RuneSystemCache` to find missing rune indices
-///    and calls `Rune::build` for each, collecting `BoxedSystem` values.
-/// 2. Drops both borrows, then calls `world.register_boxed_system` and stores
-///    the resulting `SystemId` in [`RuneSystemCache`].
-///
-/// ### Cache hit (all subsequent casts)
-/// Reads the cached `SystemId` values and calls `world.run_system_with(id, ctx)`
-/// — no allocation, no re-initialization.
 pub fn execute_cast_spell_events(world: &mut World) {
     // --- Move cursor out so we can borrow Messages at the same time ----------
     let mut cursor = world
@@ -210,11 +217,10 @@ pub fn execute_cast_spell_events(world: &mut World) {
             let id = world.register_boxed_system(boxed);
             world
                 .resource_mut::<RuneSystemCache>()
-                .systems
-                .insert((spell_id, i), id);
+                .insert(spell_id, i, id);
         }
 
-        // 3. Gather cached SystemIds (safe re-borrow after step 2 mutations).
+        // 3. Gather cached SystemIds.
         let ids: Vec<SystemId<In<CastContext>>> = {
             let cache = world.resource::<RuneSystemCache>();
             let rune_count = world
@@ -223,7 +229,7 @@ pub fn execute_cast_spell_events(world: &mut World) {
                 .map(|s| s.runes.len())
                 .unwrap_or(0);
             (0..rune_count)
-                .map(|i| cache.systems[&(spell_id, i)])
+                .filter_map(|i| cache.get(spell_id, i))
                 .collect()
         };
 

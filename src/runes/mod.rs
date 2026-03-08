@@ -37,11 +37,11 @@ impl CastContext {
 // RuneRegistry
 // ---------------------------------------------------------------------------
 
-type RuneDeserFn = fn(serde_json::Value) -> Result<Box<dyn Rune>, serde_json::Error>;
+type RuneDeserializationFn = fn(serde_json::Value) -> Result<Box<dyn Rune>, serde_json::Error>;
 
 #[derive(Default)]
 struct RuneRegistryInner {
-    deserializers: HashMap<String, RuneDeserFn>,
+    deserializers: HashMap<String, RuneDeserializationFn>,
 }
 
 impl RuneRegistryInner {
@@ -57,7 +57,7 @@ impl RuneRegistryInner {
         self.deserializers.insert(name.to_string(), deser::<R>);
     }
 
-    fn deserialize_rune(&self, mut value: serde_json::Value) -> Result<Box<dyn Rune>, RuneDeserializeError> {
+    fn deserialize_rune(&self, mut value: serde_json::Value) -> Result<BoxedRune, RuneDeserializeError> {
         let type_name = value
             .as_object_mut()
             .and_then(|obj| obj.remove("type"))
@@ -76,21 +76,7 @@ impl RuneRegistryInner {
     }
 }
 
-/// A shared, thread-safe registry mapping rune type names to their deserializers.
-///
-/// [`crate::plugin::MagicPlugin`] inserts this as a Bevy [`Resource`].
-/// The plugin automatically registers all built-in rune types during setup;
-/// additional custom runes may be added by calling [`RuneRegistry::register`]
-/// before their spells are loaded.
-///
-/// # Registering custom runes
-///
-/// ```rust,ignore
-/// // In a startup system or plugin build:
-/// fn register_custom(registry: Res<RuneRegistry>) {
-///     registry.register::<KnockbackRune>("knockback");
-/// }
-/// ```
+
 #[derive(Resource, Clone, Default)]
 pub(crate) struct RuneRegistry(Arc<RwLock<RuneRegistryInner>>);
 
@@ -98,18 +84,22 @@ impl RuneRegistry {
     /// Register a concrete rune type so it can be deserialized from JSON.
     ///
     /// `name` must match the string returned by [`Rune::name`] for that type.
-    pub fn register<R>(&self, name: &str)
+    pub fn register<R: TypePath>(&self)
     where
         R: Rune + for<'de> serde::Deserialize<'de>,
     {
-        self.0.write().unwrap().register::<R>(name);
+        let mut name = R::short_type_path().to_string();
+        if name.ends_with("Rune") {
+            name.truncate(name.len() - 4);
+        }
+        self.0.write().unwrap().register::<R>(&name.to_lowercase());
     }
 
 
     /// Deserialize a single rune from a JSON object that must include a `"type"` field.
     ///
     /// The `"type"` field is consumed and used to look up the registered deserializer.
-    pub fn deserialize_rune(&self, value: serde_json::Value) -> Result<Box<dyn Rune>, RuneDeserializeError> {
+    pub fn deserialize_rune(&self, value: serde_json::Value) -> Result<BoxedRune, RuneDeserializeError> {
         match self.0.read() {
             Ok(registry) => registry.deserialize_rune(value),
             Err(_) => Err(RuneDeserializeError::Json(serde_json::Error::custom(
@@ -146,7 +136,7 @@ pub enum RuneDeserializeError {
 /// 1. Derive `serde::Deserialize` on your struct so it can be loaded from JSON.
 /// 2. Implement the two required trait methods.
 /// 3. Register the type before spell assets are loaded:
-///    `registry.register::<MyRune>("my_rune")`.
+///    `registry.register::<MyRune>()`.
 ///
 /// ```rust,ignore
 /// use serde::Deserialize;
@@ -158,7 +148,7 @@ pub enum RuneDeserializeError {
 /// pub struct KnockbackRune { pub force: f32 }
 ///
 /// impl Rune for KnockbackRune {
-///     fn name(&self) -> &str { "knockback" }
+///     fn name() -> &'static str { "knockback" }
 ///
 ///     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
 ///         let data = self.clone();
@@ -180,12 +170,7 @@ pub enum RuneDeserializeError {
 /// ```json
 /// { "type": "damage", "amount": 50.0, "damage_type": "fire" }
 /// ```
-pub trait Rune: Send + Sync + 'static {
-    /// The unique type name used to identify this rune in serialized spells.
-    ///
-    /// Must match the string passed to [`RuneRegistry::register`] for this type.
-    fn name(&self) -> &str;
-
+pub trait Rune:  Send + Sync + 'static {
     /// Build a one-shot Bevy system that applies this rune's effect.
     ///
     /// Called at most once per (spell, rune-index) pair after load.  The
@@ -194,3 +179,4 @@ pub trait Rune: Send + Sync + 'static {
     fn build(&self) -> BoxedSystem<In<CastContext>, ()>;
 }
 
+pub type BoxedRune = Box<dyn Rune>;

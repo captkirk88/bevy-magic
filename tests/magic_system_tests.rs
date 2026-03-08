@@ -6,11 +6,7 @@ use bevy::{ecs::system::BoxedSystem, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use bevy_magic::{
-    MagicPlugin,
-    plugin::CastSpellMessage,
-    runes::{CastContext, Rune},
-    spell::Spell,
-    spellbook::Spellbook,
+    MagicPlugin, plugin::CastSpellMessage, runes::{BoxedRune, CastContext, Rune}, spell::Spell, spellbook::Spellbook
 };
 
 // ---------------------------------------------------------------------------
@@ -38,10 +34,6 @@ pub enum DamageType {
 }
 
 impl Rune for DamageRune {
-    fn name(&self) -> &str {
-        "damage"
-    }
-
     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
         let data = self.clone();
         Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
@@ -69,10 +61,6 @@ pub struct HealRune {
 }
 
 impl Rune for HealRune {
-    fn name(&self) -> &str {
-        "heal"
-    }
-
     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
         let data = self.clone();
         Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
@@ -119,10 +107,6 @@ pub enum StatusEffect {
 }
 
 impl Rune for StatusRune {
-    fn name(&self) -> &str {
-        "status"
-    }
-
     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
         let data = self.clone();
         Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
@@ -150,10 +134,6 @@ pub struct TeleportRune {
 }
 
 impl Rune for TeleportRune {
-    fn name(&self) -> &str {
-        "teleport"
-    }
-
     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
         let data = self.clone();
         Box::new(IntoSystem::into_system(
@@ -183,30 +163,18 @@ fn test_app() -> App {
     app
 }
 
-// helper providing a full-featured app; kept for manual experimentation
-fn test_full_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: None,
-        ..Default::default()
-    }))
-    // register built-in runes just like the plugin would
-    .add_plugins(test_runes(MagicPlugin::default()));
-    app
-}
-
 fn test_runes(plugin: MagicPlugin) -> MagicPlugin {
     plugin
-        .register_rune::<DamageRune>("damage")
-        .register_rune::<HealRune>("heal")
-        .register_rune::<StatusRune>("status")
-        .register_rune::<TeleportRune>("teleport")
+        .rune::<DamageRune>()
+        .rune::<HealRune>()
+        .rune::<StatusRune>()
+        .rune::<TeleportRune>()
 }
 
 /// Registry pre-populated with all built-in rune types.
 
 /// Helper mimicking the plugin's registry logic, without exposing the type.
-fn deserialize_rune(value: serde_json::Value) -> Box<dyn Rune> {
+fn deserialize_rune(value: serde_json::Value) -> (BoxedRune, String) {
     let mut obj = if let serde_json::Value::Object(o) = value {
         o
     } else {
@@ -218,17 +186,17 @@ fn deserialize_rune(value: serde_json::Value) -> Box<dyn Rune> {
         .expect("missing type field");
     match type_name.as_str() {
         "damage" => {
-            Box::new(serde_json::from_value::<DamageRune>(serde_json::Value::Object(obj)).unwrap())
+            (Box::new(serde_json::from_value::<DamageRune>(serde_json::Value::Object(obj)).unwrap()), type_name)
         }
         "heal" => {
-            Box::new(serde_json::from_value::<HealRune>(serde_json::Value::Object(obj)).unwrap())
+            (Box::new(serde_json::from_value::<HealRune>(serde_json::Value::Object(obj)).unwrap()), type_name)
         }
         "status" => {
-            Box::new(serde_json::from_value::<StatusRune>(serde_json::Value::Object(obj)).unwrap())
+            (Box::new(serde_json::from_value::<StatusRune>(serde_json::Value::Object(obj)).unwrap()), type_name)
         }
-        "teleport" => Box::new(
+        "teleport" => (Box::new(
             serde_json::from_value::<TeleportRune>(serde_json::Value::Object(obj)).unwrap(),
-        ),
+        ), type_name),
         other => panic!("unknown rune type {}", other),
     }
 }
@@ -242,11 +210,22 @@ fn spell_from_json(json: &str) -> Spell {
         runes: Vec<serde_json::Value>,
     }
     let def: SpellDef = serde_json::from_str(json).unwrap();
-    let runes = def.runes.into_iter().map(deserialize_rune).collect();
+    let runes = def.runes.into_iter().map(deserialize_rune).map(|(r, _)| r).collect();
     Spell {
         name: def.name,
         description: def.description,
         runes,
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+//  Test Systems
+// ---------------------------------------------------------------------------
+
+fn on_cast(mut cast_message: MessageReader<CastSpellMessage>) {
+    for msg in cast_message.read() {
+        eprintln!("Received CastSpellMessage: caster={:?}, targets={:?}, spell={:?}", msg.caster, msg.targets, msg.spell);
     }
 }
 
@@ -310,8 +289,8 @@ fn serialize_teleport_rune_roundtrip() {
 fn deserialize_rune_via_registry() {
     let json = r#"{"type":"heal","amount":55.0}"#;
     let value: serde_json::Value = serde_json::from_str(json).unwrap();
-    let rune = deserialize_rune(value);
-    assert_eq!(rune.name(), "heal");
+    let (_, type_name) = deserialize_rune(value);
+    assert_eq!(type_name, "heal");
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +352,8 @@ fn cast_loaded_spell_from_disk() {
     let server = app.world_mut().resource_mut::<AssetServer>();
     let handle: Handle<Spell> = server.load("spells/fireball.spell");
     for _ in 0..10 { app.update(); }
+
+    app.add_systems(Update, on_cast); // log the cast message for manual verification
 
     let caster = app.world_mut().spawn_empty().id();
     let target = app.world_mut().spawn_empty().id();
