@@ -1,0 +1,15 @@
+{
+  "name": "Arcane Blink",
+  "description": "Teleports the caster forward 5 units and deals arcane damage to any target in the destination.",
+  "runes": [
+    {
+      "type": "teleport",
+      "offset": [0.0, 0.0, 5.0]
+    },
+    {
+      "type": "damage",
+      "amount": 20.0,
+      "damage_type": "arcane"
+    }
+  ]
+}
