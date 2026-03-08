@@ -79,6 +79,45 @@ fn on_cast(mut reader: MessageReader<CastSpellMessage>) {
 
 You can also drop spell files (JSON) into `assets/spells/` and load them with `AssetServer`.
 
+## Timing: Delays and Intervals
+
+Runes support per-rune delays and intervals. When a spell is cast, the plugin automatically schedules each rune on the caster's `ActiveSpells` component and ticks them each frame.
+
+```rust
+#[derive(Debug, Clone, Reflect, Serialize, Deserialize)]
+struct BurningRune {
+    pub damage_per_tick: f32,
+}
+
+impl Rune for BurningRune {
+    /// Half-second delay before damage starts ticking.
+    fn delay(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f32(0.5)
+    }
+
+    /// Tick every 1 second (repeating).
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f32(1.0)
+    }
+
+    fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
+        let data = self.clone();
+        Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
+            for &target in &ctx.targets {
+                println!("burn: {} takes {} damage", target, data.damage_per_tick);
+            }
+        }))
+    }
+}
+```
+
+When this rune is part of a spell:
+- The first execution is delayed by 0.5 seconds.
+- Then it repeats every 1.0 second.
+
+Runes without timing (both `delay()` and `interval()` return `Duration::ZERO`) execute
+immediately and once, just like the `DamageRune` example above.
+
 ---
 
 ## Contributing

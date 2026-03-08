@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use bevy::ecs::system::BoxedSystem;
+use bevy::ecs::system::{BoxedSystem, SystemId};
 use bevy::prelude::*;
 use serde::de::Error;
 
@@ -177,6 +177,74 @@ pub trait Rune:  Send + Sync + 'static {
     /// returned system is registered and its [`SystemId`] is cached in
     /// [`crate::plugin::RuneSystemCache`].
     fn build(&self) -> BoxedSystem<In<CastContext>, ()>;
+
+    /// How long to wait before the first invocation (default = 0).
+    fn delay(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    /// If non-zero, the rune will repeat at this interval (default = 0).
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
 }
 
 pub type BoxedRune = Box<dyn Rune>;
+
+// ---------------------------------------------------------------------------
+// Active spell execution tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks in-flight spell/rune executions on a caster entity.
+#[derive(Component)]
+pub struct ActiveSpells {
+    pub(crate) spells: Vec<SpellExecution>,
+}
+
+pub(crate) struct SpellExecution {
+    pub ctx: CastContext,
+    pub runes: Vec<PendingRune>,
+}
+
+pub(crate) struct PendingRune {
+    pub system: SystemId<In<CastContext>>,
+    pub timer: Timer,
+    pub repeating: bool,
+}
+
+impl ActiveSpells {
+    pub fn new() -> Self {
+        Self {
+            spells: Vec::new(),
+        }
+    }
+
+    /// Returns the number of active spell executions.
+    pub fn spell_count(&self) -> usize {
+        self.spells.len()
+    }
+
+    pub(crate) fn add_spell(
+        &mut self,
+        ctx: CastContext,
+        rune_systems: Vec<(SystemId<In<CastContext>>, Timer, bool)>,
+    ) {
+        self.spells.push(SpellExecution {
+            ctx,
+            runes: rune_systems
+                .into_iter()
+                .map(|(sys, timer, repeating)| PendingRune {
+                    system: sys,
+                    timer,
+                    repeating,
+                })
+                .collect(),
+        });
+    }
+}
+
+impl Default for ActiveSpells {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -11,7 +11,7 @@ use bevy::{
 };
 
 use crate::{
-    runes::{CastContext, Rune, RuneRegistry},
+    runes::{ActiveSpells, CastContext, Rune, RuneRegistry},
     spell::{Spell, SpellAssetLoader},
 };
 
@@ -142,7 +142,12 @@ impl Plugin for MagicPlugin {
             .init_resource::<RuneSystemCache>()
             .add_systems(
                 Update,
-                (invalidate_spell_cache, execute_cast_spell_events).chain(),
+                (
+                    invalidate_spell_cache,
+                    execute_cast_spell_events,
+                    tick_spell_executions,
+                )
+                    .chain(),
             );
     }
 }
@@ -171,6 +176,61 @@ fn invalidate_spell_cache(
             }
             _ => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rune execution ticking system
+// ---------------------------------------------------------------------------
+
+/// Ticks all active spell executions and runs rune systems when their timers finish.
+fn tick_spell_executions(world: &mut World) {
+    let time_delta = world.resource::<Time>().delta();
+    
+    // Collect systems to run separately to avoid borrow conflicts
+    let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
+    
+    // Collect entities with ActiveSpells to avoid borrow conflicts
+    let casters: Vec<Entity> = world
+        .query_filtered::<Entity, With<ActiveSpells>>()
+        .iter(world)
+        .collect();
+
+    // Tick timers and collect systems to run
+    for caster in casters.iter() {
+        if let Some(mut active) = world.entity_mut(*caster).get_mut::<ActiveSpells>() {
+            active.spells.retain_mut(|spell| {
+                spell.runes.retain_mut(|rune| {
+                    rune.timer.tick(time_delta);
+                    if rune.timer.just_finished() {
+                        systems_to_run.push((rune.system, spell.ctx.clone()));
+                        if rune.repeating {
+                            rune.timer.reset();
+                            true  // keep the rune
+                        } else {
+                            false  // remove after one shot
+                        }
+                    } else {
+                        true  // keep, still waiting
+                    }
+                });
+                !spell.runes.is_empty()  // remove spell when all runes are done
+            });
+        }
+    }
+
+    // Remove ActiveSpells component from entities that completed all spells
+    for caster in casters {
+        if let Some(active) = world.entity(caster).get::<ActiveSpells>() {
+            if active.spells.is_empty() {
+                world.entity_mut(caster).remove::<ActiveSpells>();
+            }
+        }
+    }
+
+    // Run collected systems after releasing borrows
+    for (system_id, context) in systems_to_run {
+        let _ = world.run_system_with(system_id, context);
     }
 }
 
@@ -220,22 +280,46 @@ pub fn execute_cast_spell_events(world: &mut World) {
                 .insert(spell_id, i, id);
         }
 
-        // 3. Gather cached SystemIds.
-        let ids: Vec<SystemId<In<CastContext>>> = {
-            let cache = world.resource::<RuneSystemCache>();
-            let rune_count = world
-                .resource::<Assets<Spell>>()
-                .get(&message.spell)
-                .map(|s| s.runes.len())
-                .unwrap_or(0);
-            (0..rune_count)
-                .filter_map(|i| cache.get(spell_id, i))
-                .collect()
-        };
+        // 3. Gather cached SystemIds with timing metadata.
+        let spell_opt = world.resource::<Assets<Spell>>().get(&message.spell);
+        if spell_opt.is_none() {
+            continue;
+        }
+        let spell = spell_opt.unwrap();
+        
+        let cache = world.resource::<RuneSystemCache>();
+        let mut rune_systems: Vec<(SystemId<In<CastContext>>, Timer, bool)> = Vec::new();
+        
+        for i in 0..spell.runes.len() {
+            if let Some(sys_id) = cache.get(spell_id, i) {
+                let rune = &spell.runes[i];
+                let delay = rune.delay();
+                let interval = rune.interval();
+                
+                // Create a timer initialized to the delay duration
+                let timer = Timer::from_seconds(
+                    delay.as_secs_f32(),
+                    if interval.is_zero() {
+                        TimerMode::Once
+                    } else {
+                        TimerMode::Repeating
+                    },
+                );
+                
+                let repeating = !interval.is_zero();
+                rune_systems.push((sys_id, timer, repeating));
+            }
+        }
 
-        // 4. Run each rune system with the cast context.
-        for id in ids {
-            let _ = world.run_system_with(id, context.clone());
+        // 4. Add spell execution to caster's ActiveSpells, or create if missing.
+        if let Ok(mut entity) = world.get_entity_mut(message.caster) {
+            if let Some(mut active) = entity.get_mut::<ActiveSpells>() {
+                active.add_spell(context.clone(), rune_systems);
+            } else {
+                let mut active = ActiveSpells::new();
+                active.add_spell(context.clone(), rune_systems);
+                entity.insert(active);
+            }
         }
     }
 }

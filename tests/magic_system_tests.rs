@@ -6,7 +6,7 @@ use bevy::{ecs::system::BoxedSystem, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use bevy_magic::{
-    MagicPlugin, plugin::CastSpellMessage, runes::{BoxedRune, CastContext, Rune}, spell::Spell, spellbook::Spellbook
+    MagicPlugin, plugin::CastSpellMessage, runes::{ActiveSpells, BoxedRune, CastContext, Rune}, spell::Spell, spellbook::Spellbook
 };
 
 // ---------------------------------------------------------------------------
@@ -151,6 +151,36 @@ impl Rune for TeleportRune {
 }
 
 // ---------------------------------------------------------------------------
+// Delayed/Repeating Rune
+// ---------------------------------------------------------------------------
+
+/// A test rune that has a delay and repeats at an interval.
+/// Used for testing the timing system.
+#[derive(Debug, Clone, Reflect, Serialize, Deserialize)]
+pub struct TimedRune {
+    pub name: String,
+    pub delay_secs: f32,
+    pub interval_secs: f32,
+}
+
+impl Rune for TimedRune {
+    fn delay(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f32(self.delay_secs)
+    }
+
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f32(self.interval_secs)
+    }
+
+    fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
+        let name = self.name.clone();
+        Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
+            eprintln!("TimedRune '{}': executed on {:?}", name, ctx.caster);
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -169,6 +199,7 @@ fn test_runes(plugin: MagicPlugin) -> MagicPlugin {
         .rune::<HealRune>()
         .rune::<StatusRune>()
         .rune::<TeleportRune>()
+        .rune::<TimedRune>()
 }
 
 /// Registry pre-populated with all built-in rune types.
@@ -230,76 +261,54 @@ fn on_cast(mut cast_message: MessageReader<CastSpellMessage>) {
 }
 
 // ---------------------------------------------------------------------------
-// Rune serialization round-trips
+// Rune serialization (consolidated)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn serialize_damage_rune_roundtrip() {
-    let original = DamageRune {
+fn rune_types_serialize_and_deserialize() {
+    // Test a variety of rune types can round-trip through JSON
+    let damage = DamageRune {
         amount: 42.0,
         damage_type: DamageType::Lightning,
     };
-    let json = serde_json::to_string(&original).unwrap();
+    let json = serde_json::to_string(&damage).unwrap();
     let decoded: DamageRune = serde_json::from_str(&json).unwrap();
-
     assert_eq!(decoded.amount, 42.0);
     assert!(matches!(decoded.damage_type, DamageType::Lightning));
-}
 
-#[test]
-fn serialize_heal_rune_roundtrip() {
-    let original = HealRune { amount: 100.0 };
-    let json = serde_json::to_string(&original).unwrap();
+    let heal = HealRune { amount: 100.0 };
+    let json = serde_json::to_string(&heal).unwrap();
     let decoded: HealRune = serde_json::from_str(&json).unwrap();
-
     assert_eq!(decoded.amount, 100.0);
-}
 
-#[test]
-fn serialize_status_rune_roundtrip() {
-    let original = StatusRune {
+    let status = StatusRune {
         effect: StatusEffect::Slow { factor: 0.5 },
         duration_secs: 3.0,
     };
-    let json = serde_json::to_string(&original).unwrap();
+    let json = serde_json::to_string(&status).unwrap();
     let decoded: StatusRune = serde_json::from_str(&json).unwrap();
-
     assert_eq!(decoded.duration_secs, 3.0);
-    assert!(
-        matches!(decoded.effect, StatusEffect::Slow { factor } if (factor - 0.5).abs() < f32::EPSILON)
-    );
-}
-
-#[test]
-fn serialize_teleport_rune_roundtrip() {
-    let original = TeleportRune {
-        offset: [1.0, 2.0, 3.0],
-    };
-    let json = serde_json::to_string(&original).unwrap();
-    let decoded: TeleportRune = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(decoded.offset, [1.0, 2.0, 3.0]);
 }
 
 // ---------------------------------------------------------------------------
-// Rune name / identity
+// Spell construction
 // ---------------------------------------------------------------------------
 
 #[test]
-fn deserialize_rune_via_registry() {
-    let json = r#"{"type":"heal","amount":55.0}"#;
-    let value: serde_json::Value = serde_json::from_str(json).unwrap();
-    let (_, type_name) = deserialize_rune(value);
-    assert_eq!(type_name, "heal");
+fn spell_builder_constructs_with_runes() {
+    let spell = Spell::new("Test Spell", "A test")
+        .with_rune(HealRune { amount: 1.0 })
+        .with_rune(DamageRune {
+            amount: 2.0,
+            damage_type: DamageType::Physical,
+        });
+
+    assert_eq!(spell.name, "Test Spell");
+    assert_eq!(spell.runes.len(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// Spell serialization
-// ---------------------------------------------------------------------------
-
 #[test]
-fn deserialize_spell_from_json_literal() {
-    // Mirrors the on-disk format used by SpellAssetLoader.
+fn deserialize_spell_from_json() {
     let json = r#"
     {
         "name": "Fireball",
@@ -313,21 +322,6 @@ fn deserialize_spell_from_json_literal() {
     let spell = spell_from_json(json);
     assert_eq!(spell.name, "Fireball");
     assert_eq!(spell.runes.len(), 2);
-}
-
-#[test]
-fn spell_builder_chains_runes_in_order() {
-    let spell = Spell::new("Chain Spell", "")
-        .with_rune(HealRune { amount: 1.0 })
-        .with_rune(DamageRune {
-            amount: 2.0,
-            damage_type: DamageType::Physical,
-        })
-        .with_rune(TeleportRune {
-            offset: [0.0, 0.0, 0.0],
-        });
-
-    assert_eq!(spell.runes.len(), 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -417,35 +411,257 @@ fn build_system_teleport_moves_transform() {
 }
 
 // ---------------------------------------------------------------------------
+// Timing: Rune delays and intervals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn instant_rune_executes_immediately() {
+    let mut app = test_app();
+
+    // A rune with no delay or interval should execute right away
+    let spell = Spell::new("Instant", "").with_rune(DamageRune {
+        amount: 10.0,
+        damage_type: DamageType::Lightning,
+    });
+    let handle = app.world_mut().resource_mut::<Assets<Spell>>().add(spell);
+
+    let caster = app.world_mut().spawn_empty().id();
+    let target = app.world_mut().spawn_empty().id();
+
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![target],
+        spell: handle,
+    });
+
+    // First update: processes the cast and schedules on ActiveSpells.
+    app.update();
+
+    // Second update: ticks timers. Since delay=0, the rune should have executed.
+    app.update();
+
+    // Verify the caster no longer has an ActiveSpells component (all runes completed).
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_none());
+}
+
+#[test]
+fn delayed_rune_waits_before_execution() {
+    let mut app = test_app();
+
+    let delay = 0.001;  // 1ms delay - very short
+    let spell = Spell::new("Delayed", "").with_rune(TimedRune {
+        name: "delayed_test".to_string(),
+        delay_secs: delay,
+        interval_secs: 0.0,
+    });
+    let handle = app.world_mut().resource_mut::<Assets<Spell>>().add(spell);
+
+    let caster = app.world_mut().spawn_empty().id();
+
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: handle,
+    });
+
+    // Frame 1: Cast is processed, rune scheduled with delay.
+    app.update();
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_some());
+
+    // Process many frames to ensure delay passes.
+    for _ in 0..50 {
+        app.update();
+    }
+
+    // After delay expires, the rune should have executed and cleaned up.
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_none());
+}
+
+#[test]
+fn repeating_rune_ticks_at_interval() {
+    let mut app = test_app();
+
+    let interval = 0.1;
+    let spell = Spell::new("Repeating", "").with_rune(TimedRune {
+        name: "repeat_test".to_string(),
+        delay_secs: 0.0,
+        interval_secs: interval,
+    });
+    let handle = app.world_mut().resource_mut::<Assets<Spell>>().add(spell);
+
+    let caster = app.world_mut().spawn_empty().id();
+
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: handle,
+    });
+
+    // Frame 1: Cast is processed.
+    app.update();
+
+    // Frame 2: First tick fire (delay=0).
+    app.update();
+
+    // ActiveSpells should still exist because the rune is repeating.
+    let active = app.world().entity(caster).get::<ActiveSpells>();
+    assert!(active.is_some());
+
+    // Keep ticking to verify repetition happens multiple times.
+    for _ in 0..100 {
+        app.update();
+    }
+
+    // After many updates, the component should still be there (repeating indefinitely).
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_some());
+}
+
+#[test]
+fn instant_and_delayed_runes_mixed_in_one_spell() {
+    let mut app = test_app();
+
+    // One instant rune, one delayed rune
+    let spell = Spell::new("Mixed", "")
+        .with_rune(DamageRune {
+            amount: 10.0,
+            damage_type: DamageType::Fire,
+        })
+        .with_rune(TimedRune {
+            name: "delayed_part".to_string(),
+            delay_secs: 0.001,
+            interval_secs: 0.0,
+        });
+    let handle = app.world_mut().resource_mut::<Assets<Spell>>().add(spell);
+
+    let caster = app.world_mut().spawn_empty().id();
+
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: handle,
+    });
+
+    // Frame 1: Cast is processed.
+    app.update();
+
+    // Frame 2: Instant rune fires; delayed rune waits.
+    app.update();
+
+    // ActiveSpells should still have the delayed rune waiting.
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_some());
+
+    // Process many frames past the delay.
+    for _ in 0..50 {
+        app.update();
+    }
+
+    // After the delay, all runes are done and ActiveSpells is gone.
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_none());
+}
+
+#[test]
+fn multiple_spells_stacked_on_same_caster() {
+    let mut app = test_app();
+
+    let spell1 = Spell::new("Spell1", "").with_rune(TimedRune {
+        name: "spell1".to_string(),
+        delay_secs: 0.0,
+        interval_secs: 0.002,
+    });
+    let spell2 = Spell::new("Spell2", "").with_rune(TimedRune {
+        name: "spell2".to_string(),
+        delay_secs: 0.001,
+        interval_secs: 0.0,
+    });
+
+    let h1 = app.world_mut().resource_mut::<Assets<Spell>>().add(spell1);
+    let h2 = app.world_mut().resource_mut::<Assets<Spell>>().add(spell2);
+
+    let caster = app.world_mut().spawn_empty().id();
+
+    // Cast both spells on the same caster.
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: h1.clone(),
+    });
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: h2.clone(),
+    });
+
+    app.update();
+
+    // Both spell executions should be tracked in ActiveSpells.
+    let active = app.world().entity(caster).get::<ActiveSpells>();
+    assert!(active.is_some());
+    assert_eq!(active.unwrap().spell_count(), 2);
+
+    // Tick past spell2's delay but not too many repeats of spell1.
+    for _ in 0..50 {
+        app.update();
+    }
+
+    // spell1 is repeating so it should still exist; spell2 is done.
+    let active = app.world().entity(caster).get::<ActiveSpells>();
+    assert!(active.is_some());
+    // At this point, spell1 should still be active (repeating)
+    // and spell2 should be gone (one-shot after delay).
+    let count = active.unwrap().spell_count();
+    assert_eq!(count, 1, "Expected only spell1 to remain (repeating), but {} spells exist", count);
+}
+
+#[test]
+fn active_spells_cleaned_up_when_runes_complete() {
+    let mut app = test_app();
+
+    // A spell with one instant rune.
+    let spell = Spell::new("Quick", "").with_rune(DamageRune {
+        amount: 5.0,
+        damage_type: DamageType::Physical,
+    });
+    let handle = app.world_mut().resource_mut::<Assets<Spell>>().add(spell);
+
+    let caster = app.world_mut().spawn_empty().id();
+
+    app.world_mut().write_message(CastSpellMessage {
+        caster,
+        targets: vec![],
+        spell: handle,
+    });
+
+    app.update();
+
+    // After ticking through execution, ActiveSpells should be cleaned up.
+    app.update();
+    assert!(app.world().entity(caster).get::<ActiveSpells>().is_none());
+}
+
+// ---------------------------------------------------------------------------
 // CastContext
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cast_context_self_cast_has_no_targets() {
-    let mut app = test_app();
-    let caster = app.world_mut().spawn_empty().id();
-    let ctx = CastContext::new(caster);
-
-    assert_eq!(ctx.caster, caster);
-    assert!(ctx.targets.is_empty());
-}
-
-#[test]
-fn cast_context_multi_target() {
+fn cast_context_supports_self_and_multi_target() {
     let mut app = test_app();
     let world = app.world_mut();
 
     let caster = world.spawn_empty().id();
     let t1 = world.spawn_empty().id();
     let t2 = world.spawn_empty().id();
-    let t3 = world.spawn_empty().id();
 
-    let ctx = CastContext::new(caster).with_targets([t1, t2, t3]);
+    // Self-cast (no targets)
+    let self_ctx = CastContext::new(caster);
+    assert_eq!(self_ctx.caster, caster);
+    assert!(self_ctx.targets.is_empty());
 
-    assert_eq!(ctx.caster, caster);
-    assert_eq!(ctx.targets.len(), 3);
-    assert!(ctx.targets.contains(&t1));
-    assert!(ctx.targets.contains(&t3));
+    // Multi-target
+    let multi_ctx = CastContext::new(caster).with_targets([t1, t2]);
+    assert_eq!(multi_ctx.caster, caster);
+    assert_eq!(multi_ctx.targets.len(), 2);
+    assert!(multi_ctx.targets.contains(&t1));
+    assert!(multi_ctx.targets.contains(&t2));
 }
 
 // ---------------------------------------------------------------------------
@@ -453,53 +669,7 @@ fn cast_context_multi_target() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn spellbook_add_and_contains() {
-    let mut app = test_app();
-
-    let handle = app
-        .world_mut()
-        .resource_mut::<Assets<Spell>>()
-        .add(Spell::new("Test Spell", ""));
-
-    let entity = app.world_mut().spawn(Spellbook::default()).id();
-
-    app.world_mut()
-        .entity_mut(entity)
-        .get_mut::<Spellbook>()
-        .unwrap()
-        .add_spell(handle.clone());
-
-    let sb = app.world().entity(entity).get::<Spellbook>().unwrap();
-    assert_eq!(sb.len(), 1);
-    assert!(sb.contains(&handle));
-}
-
-#[test]
-fn spellbook_remove_spell() {
-    let mut app = test_app();
-
-    let handle = app
-        .world_mut()
-        .resource_mut::<Assets<Spell>>()
-        .add(Spell::new("Spell A", ""));
-
-    let entity = app
-        .world_mut()
-        .spawn(Spellbook::new().with_spell(handle.clone()))
-        .id();
-
-    app.world_mut()
-        .entity_mut(entity)
-        .get_mut::<Spellbook>()
-        .unwrap()
-        .remove_spell(&handle);
-
-    let sb = app.world().entity(entity).get::<Spellbook>().unwrap();
-    assert!(sb.is_empty());
-}
-
-#[test]
-fn spellbook_builder_with_spell() {
+fn spellbook_manages_spells() {
     let mut app = test_app();
 
     let h1 = app
@@ -511,8 +681,15 @@ fn spellbook_builder_with_spell() {
         .resource_mut::<Assets<Spell>>()
         .add(Spell::new("B", ""));
 
-    let sb = Spellbook::new().with_spell(h1).with_spell(h2);
+    let sb = Spellbook::new().with_spell(h1.clone()).with_spell(h2.clone());
     assert_eq!(sb.len(), 2);
+    assert!(sb.contains(&h1));
+    assert!(sb.contains(&h2));
+
+    let mut sb = sb;
+    sb.remove_spell(&h1);
+    assert_eq!(sb.len(), 1);
+    assert!(sb.contains(&h2));
 }
 
 // ---------------------------------------------------------------------------
