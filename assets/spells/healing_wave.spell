@@ -1,10 +1,7 @@
-{
-  "name": "Healing Wave",
-  "description": "A gentle wave of restorative magic that heals the caster.",
-  "runes": [
-    {
-      "type": "heal",
-      "amount": 50.0
-    }
-  ]
-}
+(
+  name: "Healing Wave",
+  description: "A gentle wave of restorative magic that heals the caster.",
+  runes: [
+    (type: "heal", amount: 50.0),
+  ],
+)

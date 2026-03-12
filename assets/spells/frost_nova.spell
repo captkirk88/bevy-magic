@@ -1,16 +1,8 @@
-{
-  "name": "Frost Nova",
-  "description": "An explosion of ice that damages and freezes all nearby targets.",
-  "runes": [
-    {
-      "type": "damage",
-      "amount": 30.0,
-      "damage_type": "ice"
-    },
-    {
-      "type": "status",
-      "effect": { "kind": "freeze" },
-      "duration_secs": 2.5
-    }
-  ]
-}
+(
+  name: "Frost Nova",
+  description: "An explosion of ice that damages and freezes all nearby targets.",
+  runes: [
+    (type: "damage", amount: 30.0, damage_type: "ice"),
+    (type: "status", effect: (kind: "freeze"), duration_secs: 2.5),
+  ],
+)

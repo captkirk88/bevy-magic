@@ -1,16 +1,8 @@
-{
-  "name": "Fireball",
-  "description": "Hurls a devastating ball of fire that deals fire damage and sets the target ablaze.",
-  "runes": [
-    {
-      "type": "damage",
-      "amount": 75.0,
-      "damage_type": "fire"
-    },
-    {
-      "type": "status",
-      "effect": { "kind": "burn" },
-      "duration_secs": 5.0
-    }
-  ]
-}
+(
+  name: "Fireball",
+  description: "Hurls a devastating ball of fire that deals fire damage and sets the target ablaze.",
+  runes: [
+    (type: "damage", amount: 75.0, damage_type: fire),
+    (type: "status", effect: (kind: "burn"), duration_secs: 5.0),
+  ],
+)

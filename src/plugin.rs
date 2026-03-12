@@ -89,17 +89,6 @@ impl RuneSystemCache {
 /// # Prerequisites
 /// [`bevy::asset::AssetPlugin`] (included in [`bevy::DefaultPlugins`]) **must**
 /// be present before `MagicPlugin`.
-///
-/// # What it registers
-/// | Kind | Name |
-/// |------|------|
-/// | Asset | `Spell` (loaded from `.spell.json`) |
-/// | AssetLoader | `SpellAssetLoader` |
-/// | Message | `CastSpellMessage` |
-/// | Resource | `SpellCastCursor` (internal) |
-/// | Resource | `RuneSystemCache` |
-/// | System | `invalidate_spell_cache` (Update) |
-/// | System | `execute_cast_spell_events` (Update, after invalidate) |
 pub struct MagicPlugin {
     rune_registrations: Vec<Box<dyn Fn(&RuneRegistry) + Send + Sync>>,
 }

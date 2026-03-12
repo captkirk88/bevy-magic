@@ -53,7 +53,7 @@ fn main() {
 }
 
 fn setup(mut commands: Commands, mut assets: ResMut<Assets<Spell>>) {
-    // build a spell in code (could also be loaded from `assets/` folder)
+    // build a spell in code (could also be loaded from `assets/` folder as a `.spell` RON file)
     let fireball = Spell::new("Fireball", "Exploding orb")
         .with_rune(DamageRune { amount: 50.0 });
 
@@ -77,7 +77,7 @@ fn on_cast(mut reader: MessageReader<CastSpellMessage>) {
 }
 ```
 
-You can also drop spell files (JSON) into `assets/spells/` and load them with `AssetServer`.
+You can also drop spell files (RON) into `assets/spells/` and load them with `AssetServer`.
 
 ## Timing: Delays and Intervals
 

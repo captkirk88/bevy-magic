@@ -16,23 +16,22 @@ use crate::runes::{RuneDeserializeError, RuneRegistry, Rune};
 
 /// A spell asset, composed of an ordered list of [`Rune`]s.
 ///
-/// Spells are loaded from `.spell.json` files via [`SpellAssetLoader`], or
+/// Spells are loaded from `.spell` files (RON format) via [`SpellAssetLoader`], or
 /// constructed programmatically with [`Spell::new`] / [`Spell::with_rune`].
 ///
-/// # JSON format
+/// # RON format
 ///
-/// Each rune object carries a `"type"` discriminant followed by the rune's
-/// own fields:
+/// Each rune object carries a `"type"` discriminant followed by the rune's own fields.
 ///
-/// ```json
-/// {
-///   "name": "Fireball",
-///   "description": "Hurls a ball of fire.",
-///   "runes": [
-///     { "type": "damage",  "amount": 75.0, "damage_type": "fire" },
-///     { "type": "status",  "effect": { "kind": "burn" }, "duration_secs": 5.0 }
-///   ]
-/// }
+/// ```ron
+/// (
+///   name: "Fireball",
+///   description: "Hurls a ball of fire.",
+///   runes: [
+///     (type: "damage", amount: 75.0, damage_type: fire),
+///     (type: "status", effect: (kind: burn), duration_secs: 5.0),
+///   ],
+/// )
 /// ```
 #[derive(Asset, TypePath)]
 pub struct Spell {
@@ -65,13 +64,13 @@ impl Spell {
 // AssetLoader
 // ---------------------------------------------------------------------------
 
-/// Errors produced while loading a `.spell.json` asset.
+/// Errors produced while loading a `.spell` asset (RON).
 #[derive(Error, Debug)]
 pub enum SpellLoadError {
     #[error("I/O error reading spell asset: {0}")]
     Io(#[from] std::io::Error),
-    #[error("JSON parse error in spell asset: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("RON parse error in spell asset: {0}")]
+    Ron(#[from] ron::Error),
     #[error("rune deserialization error: {0}")]
     Rune(#[from] RuneDeserializeError),
 }
@@ -98,7 +97,7 @@ impl AssetLoader for SpellAssetLoader {
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        spell_from_json(&bytes, &self.registry)
+        spell_from_ron(&bytes, &self.registry)
     }
 
     fn extensions(&self) -> &[&str] {
@@ -106,31 +105,37 @@ impl AssetLoader for SpellAssetLoader {
     }
 }
 
-fn spell_from_json(json: &[u8], registry: &RuneRegistry) -> Result<Spell, SpellLoadError> {
-    let value: serde_json::Value = serde_json::from_slice(json)?;
-    let obj = value.as_object().ok_or_else(|| {
-        SpellLoadError::Json(serde_json::Error::custom(
-            "expected top-level JSON object",
-        ))
+fn spell_from_ron(bytes: &[u8], registry: &RuneRegistry) -> Result<Spell, SpellLoadError> {
+    // ron::de::from_bytes returns a `SpannedError`, convert to general `ron::Error`
+    let value: ron::value::Value = ron::de::from_bytes(bytes).map_err(|e| SpellLoadError::Ron(e.into()))?;
+    let obj = if let ron::value::Value::Map(m) = value {
+        m
+    } else {
+        return Err(SpellLoadError::Ron(ron::Error::custom(
+            "expected top-level RON map",
+        )));
+    };
+    // helper to fetch a string field from the map
+    let get_str = |key: &str| {
+        obj.get(&ron::value::Value::String(key.to_string()))
+            .and_then(|v| if let ron::value::Value::String(s) = v { Some(s) } else { None })
+    };
+    let name = get_str("name").ok_or_else(|| {
+        SpellLoadError::Ron(ron::Error::custom("missing or invalid 'name' field"))
     })?;
-    let name = obj.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-        SpellLoadError::Json(serde_json::Error::custom(
-            "missing or invalid 'name' field",
-        ))
+    let description = get_str("description").ok_or_else(|| {
+        SpellLoadError::Ron(ron::Error::custom("missing or invalid 'description' field"))
     })?;
-    let description = obj
-        .get("description")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            SpellLoadError::Json(serde_json::Error::custom(
-                "missing or invalid 'description' field",
-            ))
-        })?;
-    let runes_array = obj.get("runes").and_then(|v| v.as_array()).ok_or_else(|| {
-        SpellLoadError::Json(serde_json::Error::custom(
-            "missing or invalid 'runes' field (expected array)",
-        ))
-    })?;
+    let runes_value = obj
+        .get(&ron::value::Value::String("runes".to_string()))
+        .ok_or_else(|| SpellLoadError::Ron(ron::Error::custom("missing 'runes' field")))?;
+    let runes_array = if let ron::value::Value::Seq(s) = runes_value {
+        s
+    } else {
+        return Err(SpellLoadError::Ron(ron::Error::custom(
+            "invalid 'runes' field (expected sequence)",
+        )));
+    };
     let mut runes = Vec::new();
     for rune_value in runes_array {
         let rune = registry.deserialize_rune(rune_value.clone())?;

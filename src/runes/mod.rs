@@ -31,13 +31,19 @@ impl CastContext {
         self.targets = targets.into_iter().collect();
         self
     }
+
+    pub fn with_target(mut self, target: Entity) -> Self {
+        self.targets.push(target);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
 // RuneRegistry
 // ---------------------------------------------------------------------------
 
-type RuneDeserializationFn = fn(serde_json::Value) -> Result<Box<dyn Rune>, serde_json::Error>;
+
+type RuneDeserializationFn = fn(ron::value::Value) -> Result<Box<dyn Rune>, ron::Error>;
 
 #[derive(Default)]
 struct RuneRegistryInner {
@@ -50,29 +56,34 @@ impl RuneRegistryInner {
         R: Rune + for<'de> serde::Deserialize<'de>,
     {
         fn deser<R: Rune + for<'de> serde::Deserialize<'de>>(
-            v: serde_json::Value,
-        ) -> Result<Box<dyn Rune>, serde_json::Error> {
-            serde_json::from_value::<R>(v).map(|r| Box::new(r) as Box<dyn Rune>)
+            v: ron::value::Value,
+        ) -> Result<Box<dyn Rune>, ron::Error> {
+            // `ron::value::Value` implements `Deserializer`, so we can hand it directly
+            // to the type we want to build.  the error type is already `ron::Error`.
+            let r: R = serde::Deserialize::deserialize(v)?;
+            Ok(Box::new(r) as Box<dyn Rune>)
         }
         self.deserializers.insert(name.to_string(), deser::<R>);
     }
 
-    fn deserialize_rune(&self, mut value: serde_json::Value) -> Result<BoxedRune, RuneDeserializeError> {
-        let type_name = value
-            .as_object_mut()
-            .and_then(|obj| obj.remove("type"))
-            .and_then(|v| match v {
-                serde_json::Value::String(s) => Some(s),
-                _ => None,
-            })
-            .ok_or(RuneDeserializeError::MissingType)?;
+    fn deserialize_rune(&self, mut value: ron::value::Value) -> Result<BoxedRune, RuneDeserializeError> {
+        // extract and consume the "type" field from the map
+        let type_name = if let ron::value::Value::Map(ref mut map) = value {
+            let key = ron::value::Value::String("type".to_string());
+            match map.remove(&key) {
+                Some(ron::value::Value::String(s)) => s,
+                _ => return Err(RuneDeserializeError::MissingType(format!("{:?}", value))),
+            }
+        } else {
+            return Err(RuneDeserializeError::MissingType(format!("{:?}", value)));
+        };
 
         let deser_fn = self
             .deserializers
             .get(&type_name)
-            .ok_or_else(|| RuneDeserializeError::UnknownType(type_name))?;
+            .ok_or_else(|| RuneDeserializeError::UnknownType(type_name.clone()))?;
 
-        deser_fn(value).map_err(RuneDeserializeError::Json)
+        deser_fn(value).map_err(RuneDeserializeError::Ron)
     }
 }
 
@@ -81,9 +92,12 @@ impl RuneRegistryInner {
 pub(crate) struct RuneRegistry(Arc<RwLock<RuneRegistryInner>>);
 
 impl RuneRegistry {
-    /// Register a concrete rune type so it can be deserialized from JSON.
+    /// Register a concrete rune type so it can be deserialized from RON.
     ///
     /// `name` must match the string returned by [`Rune::name`] for that type.
+    ///
+    /// The underlying representation is RON rather than JSON, but the procedure is
+    /// otherwise the same.
     pub fn register<R: TypePath>(&self)
     where
         R: Rune + for<'de> serde::Deserialize<'de>,
@@ -96,28 +110,28 @@ impl RuneRegistry {
     }
 
 
-    /// Deserialize a single rune from a JSON object that must include a `"type"` field.
+    /// Deserialize a single rune from a RON value that must include a `"type"` field.
     ///
     /// The `"type"` field is consumed and used to look up the registered deserializer.
-    pub fn deserialize_rune(&self, value: serde_json::Value) -> Result<BoxedRune, RuneDeserializeError> {
+    pub fn deserialize_rune(&self, value: ron::value::Value) -> Result<BoxedRune, RuneDeserializeError> {
         match self.0.read() {
             Ok(registry) => registry.deserialize_rune(value),
-            Err(_) => Err(RuneDeserializeError::Json(serde_json::Error::custom(
+            Err(_) => Err(RuneDeserializeError::Ron(ron::Error::custom(
                 "rune registry lock poisoned",
             ))),
         }
     }
 }
 
-/// Errors produced while deserializing a [`Rune`] from JSON.
+/// Errors produced while deserializing a [`Rune`] from RON.
 #[derive(Debug, thiserror::Error)]
 pub enum RuneDeserializeError {
-    #[error("rune JSON object is missing the required \"type\" field")]
-    MissingType,
+    #[error("rune RON object is missing the required \"type\" field: {0}")]
+    MissingType(String),
     #[error("unknown rune type \"{0}\" — was it registered with RuneRegistry?")]
     UnknownType(String),
-    #[error("JSON error deserializing rune: {0}")]
-    Json(serde_json::Error),
+    #[error("RON error deserializing rune: {0}")]
+    Ron(ron::Error),
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +147,7 @@ pub enum RuneDeserializeError {
 ///
 /// # Implementing a custom rune
 ///
-/// 1. Derive `serde::Deserialize` on your struct so it can be loaded from JSON.
+/// 1. Derive `serde::Deserialize` on your struct so it can be loaded from RON.
 /// 2. Implement the two required trait methods.
 /// 3. Register the type before spell assets are loaded:
 ///    `registry.register::<MyRune>()`.
@@ -165,10 +179,10 @@ pub enum RuneDeserializeError {
 ///
 /// # Serialization format
 ///
-/// Runes are deserialized from a JSON object with a `"type"` discriminant key:
+/// Runes are deserialized from a RON map with a `"type"` discriminant key.
 ///
-/// ```json
-/// { "type": "damage", "amount": 50.0, "damage_type": "fire" }
+/// ```ron
+/// (type: "damage", amount: 50.0, damage_type: fire)
 /// ```
 pub trait Rune:  Send + Sync + 'static {
     /// Build a one-shot Bevy system that applies this rune's effect.
