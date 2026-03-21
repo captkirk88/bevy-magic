@@ -6,7 +6,8 @@ pub mod spellbook;
 
 pub use enchanting::{
     ActiveEnchantmentEntry, ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource,
-    ApplyEnchantmentMessage, RemoveEnchantmentMessage,
+    EnchantmentTrigger, ApplyEnchantmentMessage, RemoveEnchantmentMessage,
+    TriggerEnchantmentMessage,
 };
 pub use plugin::{CastSpellMessage, MagicPlugin};
 

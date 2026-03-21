@@ -5,6 +5,21 @@
 //! [`Enchantable`] marker component can receive enchantments via
 //! [`ApplyEnchantmentMessage`] and have them removed via [`RemoveEnchantmentMessage`].
 //!
+//! # Items
+//!
+//! Items (weapons, armour, consumables, etc.) are enchantable by simply adding
+//! [`Enchantable`] to the item entity — no separate `Item` component is needed.
+//! The enchantment's [`CastContext`] will name the item as the target; rune
+//! systems are free to walk equipped-item relationships with normal queries.
+//!
+//! # Triggers
+//!
+//! By default enchantments are **timed** — each rune fires according to its own
+//! `delay()` / `interval()` schedule.  Set [`EnchantmentTrigger::OnDemand`] on
+//! an [`Enchantment`] to suppress timer-driven firing; instead the runes run
+//! only when a [`TriggerEnchantmentMessage`] naming that enchantment is sent,
+//! which is useful for "on-hit", "on-equip", or other event-driven effects.
+//!
 //! # Quick start
 //!
 //! ```rust,ignore
@@ -51,9 +66,33 @@ use crate::{
 
 pub mod prelude {
     pub use crate::enchanting::{
-        ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource,
-        ApplyEnchantmentMessage, RemoveEnchantmentMessage,
+        ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource, EnchantmentTrigger,
+        ApplyEnchantmentMessage, RemoveEnchantmentMessage, TriggerEnchantmentMessage,
     };
+}
+
+// ---------------------------------------------------------------------------
+// EnchantmentTrigger
+// ---------------------------------------------------------------------------
+
+/// Determines when an enchantment's runes fire.
+///
+/// The default is [`EnchantmentTrigger::Timed`], which preserves the existing
+/// timer-driven behaviour where each rune fires according to its `delay()` and
+/// `interval()`.
+///
+/// Use [`EnchantmentTrigger::OnDemand`] for event-driven effects (on-hit,
+/// on-equip, etc.) — runes only run when a [`TriggerEnchantmentMessage`] is
+/// sent that names this enchantment.
+#[derive(Clone, Debug, Default)]
+pub enum EnchantmentTrigger {
+    /// Runes fire according to each rune's own `delay()` / `interval()` timers
+    /// (default behaviour).
+    #[default]
+    Timed,
+    /// Runes fire only when a [`TriggerEnchantmentMessage`] names this enchantment.
+    /// The enchantment persists until explicitly removed.
+    OnDemand,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +125,8 @@ pub struct Enchantment {
     pub applier: Entity,
     /// Source of this enchantment's effects.
     pub source: EnchantmentSource,
+    /// When runes should fire (default: [`EnchantmentTrigger::Timed`]).
+    pub trigger: EnchantmentTrigger,
 }
 
 impl Enchantment {
@@ -101,6 +142,7 @@ impl Enchantment {
             description: description.into(),
             applier,
             source: EnchantmentSource::Runes(runes),
+            trigger: EnchantmentTrigger::default(),
         }
     }
 
@@ -116,7 +158,20 @@ impl Enchantment {
             description: description.into(),
             applier,
             source: EnchantmentSource::Spell(spell),
+            trigger: EnchantmentTrigger::default(),
         }
+    }
+
+    /// Override the trigger mode for this enchantment.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// Enchantment::from_runes("On-Hit Burn", "...", applier, runes)
+    ///     .with_trigger(EnchantmentTrigger::OnDemand)
+    /// ```
+    pub fn with_trigger(mut self, trigger: EnchantmentTrigger) -> Self {
+        self.trigger = trigger;
+        self
     }
 }
 
@@ -160,6 +215,25 @@ pub struct RemoveEnchantmentMessage {
     pub name: String,
 }
 
+/// Send this message to fire the runes of an [`EnchantmentTrigger::OnDemand`]
+/// enchantment.
+///
+/// All runes on the named enchantment run once; the enchantment itself
+/// persists.  Use [`RemoveEnchantmentMessage`] to remove it entirely.
+///
+/// # Example
+/// ```rust,ignore
+/// // Inside an "on-hit" observer or system:
+/// commands.trigger_enchantment(sword_entity, "Flame Edge");
+/// ```
+#[derive(Message, Clone, Debug)]
+pub struct TriggerEnchantmentMessage {
+    /// Entity that carries the enchantment.
+    pub target: Entity,
+    /// Name of the enchantment to fire (case-sensitive).
+    pub name: String,
+}
+
 // ---------------------------------------------------------------------------
 // Internal tracking
 // ---------------------------------------------------------------------------
@@ -171,6 +245,7 @@ pub struct ActiveEnchantmentEntry {
     /// Description of this enchantment.
     pub description: String,
     pub(crate) applier: Entity,
+    pub(crate) trigger: EnchantmentTrigger,
     pub(crate) rune_executions: Vec<ActiveEnchantRune>,
 }
 
@@ -216,6 +291,9 @@ pub(crate) struct ApplyEnchantmentCursor(pub MessageCursor<ApplyEnchantmentMessa
 
 #[derive(Resource, Default)]
 pub(crate) struct RemoveEnchantmentCursor(pub MessageCursor<RemoveEnchantmentMessage>);
+
+#[derive(Resource, Default)]
+pub(crate) struct TriggerEnchantmentCursor(pub MessageCursor<TriggerEnchantmentMessage>);
 
 // ---------------------------------------------------------------------------
 // Systems
@@ -319,6 +397,7 @@ pub(crate) fn apply_enchantments(world: &mut World) {
             name: enchantment.name.clone(),
             description: enchantment.description.clone(),
             applier: enchantment.applier,
+            trigger: enchantment.trigger.clone(),
             rune_executions,
         };
 
@@ -358,11 +437,12 @@ pub(crate) fn remove_enchantments(world: &mut World) {
     }
 }
 
-/// Ticks all active enchantment rune timers and runs rune systems when they fire.
+/// Ticks all **timed** enchantment rune timers and runs rune systems when they fire.
 ///
-/// Non-repeating runes are dropped after firing. Enchantment slots with no
-/// remaining rune executions are pruned. The [`ActiveEnchantments`] component
-/// is removed when it becomes empty.
+/// [`EnchantmentTrigger::OnDemand`] enchantments are skipped here — their runes
+/// fire only via [`trigger_enchantments`].  Non-repeating runes are dropped after
+/// firing.  Enchantment slots with no remaining rune executions are pruned, and
+/// the [`ActiveEnchantments`] component is removed when it becomes empty.
 pub(crate) fn tick_enchantments(world: &mut World) {
     let delta = world.resource::<Time>().delta();
 
@@ -371,6 +451,11 @@ pub(crate) fn tick_enchantments(world: &mut World) {
 
     for (entity, mut active) in world.query::<(Entity, &mut ActiveEnchantments)>().iter_mut(world) {
         active.enchantments.retain_mut(|enchantment| {
+            // OnDemand enchantments are never pruned by the timer path.
+            if matches!(enchantment.trigger, EnchantmentTrigger::OnDemand) {
+                return true;
+            }
+
             let applier = enchantment.applier;
             enchantment.rune_executions.retain_mut(|rune| {
                 rune.timer.tick(delta);
@@ -403,6 +488,63 @@ pub(crate) fn tick_enchantments(world: &mut World) {
     for entity in entities_to_cleanup {
         if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
             entity_mut.remove::<ActiveEnchantments>();
+        }
+    }
+
+    for (system_id, context) in systems_to_run {
+        let _ = world.run_system_with(system_id, context);
+    }
+}
+
+/// Processes pending [`TriggerEnchantmentMessage`]s, firing the runes of each
+/// named [`EnchantmentTrigger::OnDemand`] enchantment once.
+///
+/// The enchantment persists after firing; send a [`RemoveEnchantmentMessage`]
+/// to tear it down explicitly.
+pub(crate) fn trigger_enchantments(world: &mut World) {
+    let mut cursor = world
+        .remove_resource::<TriggerEnchantmentCursor>()
+        .unwrap_or_default();
+
+    let messages: Vec<TriggerEnchantmentMessage> = {
+        let messages_res = world.resource::<Messages<TriggerEnchantmentMessage>>();
+        cursor.0.read(messages_res).cloned().collect()
+    };
+
+    world.insert_resource(cursor);
+
+    let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
+
+    for msg in messages {
+        let target = msg.target;
+        let Ok(mut entity_mut) = world.get_entity_mut(target) else {
+            continue;
+        };
+        let Some(mut active) = entity_mut.get_mut::<ActiveEnchantments>() else {
+            continue;
+        };
+
+        for enchantment in active.enchantments.iter_mut() {
+            if enchantment.name != msg.name {
+                continue;
+            }
+            if !matches!(enchantment.trigger, EnchantmentTrigger::OnDemand) {
+                warn_once!(
+                    "TriggerEnchantmentMessage: enchantment '{}' on {:?} is not OnDemand — ignoring.",
+                    msg.name, target
+                );
+                continue;
+            }
+            let applier = enchantment.applier;
+            for rune in &enchantment.rune_executions {
+                systems_to_run.push((
+                    rune.system_id,
+                    CastContext {
+                        caster: applier,
+                        targets: vec![target],
+                    },
+                ));
+            }
         }
     }
 

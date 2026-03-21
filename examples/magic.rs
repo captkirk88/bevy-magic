@@ -5,6 +5,8 @@
 //!   * Loading spells from `.spell` asset files (RON).
 //!   * Casting spells via [`CommandsExt::cast_magic`] / [`CastSpellMessage`].
 //!   * Applying and removing [`Enchantment`]s on [`Enchantable`] entities.
+//!   * Enchanting an **item** entity (Sword) with [`EnchantmentTrigger::OnDemand`].
+//!   * Manually firing an on-demand enchantment via [`CommandsExt::trigger_enchantment`].
 //!   * Reacting to game state driven by the magic system.
 //!
 //! # Running
@@ -40,6 +42,10 @@ use bevy_magic::{
 /// Player marker.
 #[derive(Component)]
 struct Player;
+
+/// Sword item marker — no separate `Item` component needed; [`Enchantable`] is sufficient.
+#[derive(Component)]
+struct Sword;
 
 /// Enemy marker.
 #[derive(Component)]
@@ -296,6 +302,15 @@ struct SpellHandles {
     flame_brand: Handle<Spell>,
 }
 
+/// Entity handles populated during setup.
+#[derive(Resource)]
+struct SceneEntities {
+    player: Entity,
+    goblin: Entity,
+    orc: Entity,
+    sword: Entity,
+}
+
 /// Simple frame counter; the example exits after a fixed number of frames.
 #[derive(Resource, Default)]
 struct FrameCounter(u32);
@@ -343,30 +358,41 @@ fn setup(mut commands: Commands, mut spell_assets: ResMut<Assets<Spell>>) {
     commands.insert_resource(handles);
 
     // Player: can cast spells and be enchanted.
-    commands.spawn((
-        Name::new("Aldric (Player)"),
+    let player = commands.spawn((
+        Name::new("Player"),
         Player,
         Enchantable,
         Health::new(200.0),
         Transform::default(),
         Spellbook::new(),
-    ));
+    )).id();
 
     // Enemies: enchantable targets.
-    commands.spawn((
+    let goblin = commands.spawn((
         Name::new("Goblin"),
         Enemy,
         Enchantable,
         Health::new(60.0),
         Transform::from_xyz(5.0, 0.0, 0.0),
-    ));
-    commands.spawn((
+    )).id();
+
+    let orc = commands.spawn((
         Name::new("Orc Warlord"),
         Enemy,
         Enchantable,
         Health::new(150.0),
         Transform::from_xyz(10.0, 0.0, 0.0),
-    ));
+    )).id();
+
+    // Sword item — Enchantable works on items just like characters.
+    // No dedicated Item component needed.
+    let sword = commands.spawn((
+        Name::new("Flameburst Sword"),
+        Sword,
+        Enchantable,
+    )).id();
+
+    commands.insert_resource(SceneEntities { player, goblin, orc, sword });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -378,8 +404,7 @@ fn setup(mut commands: Commands, mut spell_assets: ResMut<Assets<Spell>>) {
 fn demo_driver(
     mut commands: Commands,
     handles: Res<SpellHandles>,
-    player: Query<Entity, With<Player>>,
-    enemies: Query<Entity, With<Enemy>>,
+    scene: Res<SceneEntities>,
     mut has_run: Local<bool>,
 ) -> Result<(), BevyError> {
     if *has_run {
@@ -387,20 +412,17 @@ fn demo_driver(
     }
     *has_run = true;
 
-    let player_e = player.single()?;
-    let enemy_list: Vec<Entity> = enemies.iter().collect();
-    let goblin = enemy_list[0];
-    let orc = enemy_list[1];
+    let player_e = scene.player;
+    let goblin = scene.goblin;
+    let orc = scene.orc;
+    let sword = scene.sword;
+    let enemy_list = vec![goblin, orc];
 
     println!("--- Starting demo ---\n");
 
     // 1. Cast Fireball at both enemies.
     println!("[Cast] Fireball → Goblin + Orc Warlord");
-    commands.cast_magic(
-        player_e,
-        handles.fireball.clone(),
-        Some(enemy_list.clone()),
-    );
+    commands.cast_magic(player_e, handles.fireball.clone(), Some(enemy_list.clone()));
 
     // 2. Cast Frost Nova at the Goblin.
     println!("[Cast] Frost Nova → Goblin");
@@ -412,14 +434,10 @@ fn demo_driver(
 
     // 4. Cast Arcane Blink (self-teleport + arcane damage to Orc).
     println!("[Cast] Arcane Blink → Orc Warlord");
-    commands.cast_magic(
-        player_e,
-        handles.arcane_blink.clone(),
-        Some(vec![orc]),
-    );
+    commands.cast_magic(player_e, handles.arcane_blink.clone(), Some(vec![orc]));
 
-    // 5. Apply an inline rune-based Poison enchantment to the Goblin.
-    println!("[Enchant] Applying 'Venom Curse' (inline runes) to Goblin");
+    // 5. Apply an inline rune-based Poison enchantment to the Goblin (Timed).
+    println!("[Enchant] Applying 'Venom Curse' (inline runes, timed) to Goblin");
     commands.apply_enchantment(
         goblin,
         Enchantment::from_runes(
@@ -430,8 +448,8 @@ fn demo_driver(
         ),
     );
 
-    // 6. Apply a spell-asset-backed Flame Brand enchantment to the Orc.
-    println!("[Enchant] Applying 'Flame Brand' (spell asset) to Orc Warlord");
+    // 6. Apply a spell-asset-backed Flame Brand enchantment to the Orc (Timed).
+    println!("[Enchant] Applying 'Flame Brand' (spell asset, timed) to Orc Warlord");
     commands.apply_enchantment(
         orc,
         Enchantment::from_spell(
@@ -442,28 +460,43 @@ fn demo_driver(
         ),
     );
 
+    // 7. Enchant the Sword item with an OnDemand trigger — fires only when the
+    //    sword hits something, not on a fixed timer.
+    println!("[Enchant] Enchanting 'Flameburst Sword' with 'Flame Edge' (OnDemand)");
+    commands.apply_enchantment(
+        sword,
+        Enchantment::from_runes(
+            "Flame Edge",
+            "Deals fire damage on-hit.",
+            player_e,
+            vec![Box::new(PoisonTickRune { damage_per_tick: 12.0 })],
+        )
+        .with_trigger(EnchantmentTrigger::OnDemand),
+    );
+
     Ok(())
 }
 
 /// Removes the Poison enchantment from the Goblin after 30 frames — shows
-/// mid-game dispel.
+/// mid-game dispel.  Also fires the sword's OnDemand enchantment a few times
+/// to simulate hit events.
 fn dispel_after_delay(
     mut commands: Commands,
-    enemies: Query<(Entity, &Name), With<Enemy>>,
     frame: Res<FrameCounter>,
+    scene: Res<SceneEntities>,
     mut done: Local<bool>,
 ) {
     // Dispel at ~3 s (180 frames × 16 ms).
-    if *done || frame.0 != 180 {
-        return;
+    if frame.0 == 180 && !*done {
+        *done = true;
+        println!("\n[Dispel] Removing 'Venom Curse' from Goblin");
+        commands.remove_enchantment(scene.goblin, "Venom Curse");
     }
-    *done = true;
 
-    for (entity, name) in &enemies {
-        if name.as_str().contains("Goblin") {
-            println!("\n[Dispel] Removing 'Venom Curse' from {}", name);
-            commands.remove_enchantment(entity, "Venom Curse");
-        }
+    // Simulate sword hits at frames 60, 120, 240 — each fires the OnDemand rune.
+    if frame.0 == 60 || frame.0 == 120 || frame.0 == 240 {
+        println!("\n[Hit] Sword strikes — triggering 'Flame Edge' on {:?}", scene.sword);
+        commands.trigger_enchantment(scene.sword, "Flame Edge");
     }
 }
 
@@ -475,6 +508,7 @@ fn dispel_after_delay(
 fn print_status(
     frame: Res<FrameCounter>,
     combatants: Query<(&Name, &Health, Option<&ActiveSpells>, Option<&ActiveEnchantments>)>,
+    items: Query<(&Name, Option<&ActiveEnchantments>), With<Sword>>,
 ) {
     // Print every second (~60 frames at 60 fps).
     if frame.0 % 60 != 0 {
@@ -492,6 +526,16 @@ fn print_status(
             hp.current,
             hp.max,
             spell_count,
+            enchant_names.join(", ")
+        );
+    }
+    for (name, enchants) in &items {
+        let enchant_names: Vec<&str> = enchants
+            .map(|e| e.names().collect())
+            .unwrap_or_default();
+        println!(
+            "  {:<20} [item]   enchantments: [{}]",
+            name.as_str(),
             enchant_names.join(", ")
         );
     }

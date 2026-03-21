@@ -12,9 +12,10 @@ use bevy::{
 
 use crate::{
     enchanting::{
-        apply_enchantments, remove_enchantments, tick_enchantments,
+        apply_enchantments, remove_enchantments, tick_enchantments, trigger_enchantments,
         ApplyEnchantmentCursor, ApplyEnchantmentMessage,
         RemoveEnchantmentCursor, RemoveEnchantmentMessage,
+        TriggerEnchantmentCursor, TriggerEnchantmentMessage,
     },
     runes::{ActiveSpells, CastContext, Rune, RuneRegistry},
     spell::{Spell, SpellAssetLoader},
@@ -134,10 +135,12 @@ impl Plugin for MagicPlugin {
             .add_message::<CastSpellMessage>()
             .add_message::<ApplyEnchantmentMessage>()
             .add_message::<RemoveEnchantmentMessage>()
+            .add_message::<TriggerEnchantmentMessage>()
             .init_resource::<SpellCastCursor>()
             .init_resource::<RuneSystemCache>()
             .init_resource::<ApplyEnchantmentCursor>()
             .init_resource::<RemoveEnchantmentCursor>()
+            .init_resource::<TriggerEnchantmentCursor>()
             .add_systems(
                 Update,
                 (
@@ -147,6 +150,7 @@ impl Plugin for MagicPlugin {
                     apply_enchantments,
                     remove_enchantments,
                     tick_enchantments,
+                    trigger_enchantments,
                 )
                     .chain(),
             );
