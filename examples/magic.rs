@@ -30,9 +30,6 @@ use serde::{Deserialize, Serialize};
 use bevy_magic::{
     enchanting::prelude::*,
     prelude::*,
-    runes::{ActiveSpells, CastContext, Rune},
-    spell::Spell,
-    Spellbook,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,6 +305,7 @@ struct SceneEntities {
     player: Entity,
     goblin: Entity,
     orc: Entity,
+    boss: Entity,
     sword: Entity,
 }
 
@@ -384,6 +382,14 @@ fn setup(mut commands: Commands, mut spell_assets: ResMut<Assets<Spell>>) {
         Transform::from_xyz(10.0, 0.0, 0.0),
     )).id();
 
+    let boss = commands.spawn((
+        Name::new("Dreadnought"),
+        Enemy,
+        Enchantable,
+        Health::new(300.0),
+        Transform::from_xyz(15.0, 0.0, 0.0),
+    )).id();
+
     // Sword item — Enchantable works on items just like characters.
     // No dedicated Item component needed.
     let sword = commands.spawn((
@@ -392,7 +398,7 @@ fn setup(mut commands: Commands, mut spell_assets: ResMut<Assets<Spell>>) {
         Enchantable,
     )).id();
 
-    commands.insert_resource(SceneEntities { player, goblin, orc, sword });
+    commands.insert_resource(SceneEntities { player, goblin, orc, boss, sword });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,10 +499,16 @@ fn dispel_after_delay(
         commands.remove_enchantment(scene.goblin, "Venom Curse");
     }
 
-    // Simulate sword hits at frames 60, 120, 240 — each fires the OnDemand rune.
-    if frame.0 == 60 || frame.0 == 120 || frame.0 == 240 {
+    // Simulate sword hits at frames 60 and 120 on the boss (goblin may be dead by then).
+    if frame.0 == 60 || frame.0 == 120 {
         println!("\n[Hit] Sword strikes — triggering 'Flame Edge' on {:?}", scene.sword);
-        commands.trigger_enchantment(scene.sword, "Flame Edge");
+        commands.trigger_enchantment(scene.sword, "Flame Edge", Some(vec![scene.boss]));
+    }
+
+    // Final boss extra strike at frame 240.
+    if frame.0 == 240 {
+        println!("\n[Boss Hit] Flameburst Sword hits Dreadnought again!");
+        commands.trigger_enchantment(scene.sword, "Flame Edge", Some(vec![scene.boss]));
     }
 }
 
@@ -517,15 +529,17 @@ fn print_status(
     println!("\n--- Status (frame {}) ---", frame.0);
     for (name, hp, active_spells, enchants) in &combatants {
         let spell_count = active_spells.map(|a| a.spell_count()).unwrap_or(0);
+        let enchant_count = enchants.map(|e| e.count()).unwrap_or(0);
         let enchant_names: Vec<&str> = enchants
             .map(|e| e.names().collect())
             .unwrap_or_default();
         println!(
-            "  {:<20} HP {:.0}/{:.0}   spells in-flight: {}   enchantments: [{}]",
+            "  {:<20} HP {:.0}/{:.0}   spells in-flight: {}   enchantments: {} [{}]",
             name.as_str(),
             hp.current,
             hp.max,
             spell_count,
+            enchant_count,
             enchant_names.join(", ")
         );
     }

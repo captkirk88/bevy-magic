@@ -23,8 +23,13 @@ pub trait CommandsExt {
     fn remove_enchantment(&mut self, target: Entity, name: impl Into<String>) -> &mut Self;
 
     /// Manually fire the runes of an [`crate::enchanting::EnchantmentTrigger::OnDemand`]
-    /// enchantment named `name` on `target`.
-    fn trigger_enchantment(&mut self, target: Entity, name: impl Into<String>) -> &mut Self;
+    /// enchantment named `name` on `source`, affecting `targets`.
+    fn trigger_enchantment(
+        &mut self,
+        source: Entity,
+        name: impl Into<String>,
+        targets: Option<Vec<Entity>>,
+    ) -> &mut Self;
 }
 
 impl CommandsExt for Commands<'_, '_> {
@@ -55,10 +60,16 @@ impl CommandsExt for Commands<'_, '_> {
         })
     }
 
-    fn trigger_enchantment(&mut self, target: Entity, name: impl Into<String>) -> &mut Self {
+    fn trigger_enchantment(
+        &mut self,
+        source: Entity,
+        name: impl Into<String>,
+        targets: Option<Vec<Entity>>,
+    ) -> &mut Self {
         self.write_message(TriggerEnchantmentMessage {
-            target,
+            source,
             name: name.into(),
+            targets: targets.unwrap_or_else(Vec::new),
         })
     }
 }

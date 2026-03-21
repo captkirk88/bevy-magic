@@ -8,7 +8,7 @@
 //! # Items
 //!
 //! Items (weapons, armour, consumables, etc.) are enchantable by simply adding
-//! [`Enchantable`] to the item entity — no separate `Item` component is needed.
+//! [`Enchantable`] to the item entity.
 //! The enchantment's [`CastContext`] will name the item as the target; rune
 //! systems are free to walk equipped-item relationships with normal queries.
 //!
@@ -65,7 +65,7 @@ use crate::{
 };
 
 pub mod prelude {
-    pub use crate::enchanting::{
+    pub use super::{
         ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource, EnchantmentTrigger,
         ApplyEnchantmentMessage, RemoveEnchantmentMessage, TriggerEnchantmentMessage,
     };
@@ -218,20 +218,22 @@ pub struct RemoveEnchantmentMessage {
 /// Send this message to fire the runes of an [`EnchantmentTrigger::OnDemand`]
 /// enchantment.
 ///
-/// All runes on the named enchantment run once; the enchantment itself
-/// persists.  Use [`RemoveEnchantmentMessage`] to remove it entirely.
+/// `source` is the entity that hosts the enchantment. `targets` are the entity
+/// or entities affected by the triggered effect.
 ///
 /// # Example
 /// ```rust,ignore
 /// // Inside an "on-hit" observer or system:
-/// commands.trigger_enchantment(sword_entity, "Flame Edge");
+/// commands.trigger_enchantment(sword_entity, "Flame Edge", Some(vec![goblin]))
 /// ```
 #[derive(Message, Clone, Debug)]
 pub struct TriggerEnchantmentMessage {
     /// Entity that carries the enchantment.
-    pub target: Entity,
+    pub source: Entity,
     /// Name of the enchantment to fire (case-sensitive).
     pub name: String,
+    /// Targets to receive the triggered effect.
+    pub targets: Vec<Entity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -517,8 +519,8 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
     let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
 
     for msg in messages {
-        let target = msg.target;
-        let Ok(mut entity_mut) = world.get_entity_mut(target) else {
+        let source = msg.source;
+        let Ok(mut entity_mut) = world.get_entity_mut(source) else {
             continue;
         };
         let Some(mut active) = entity_mut.get_mut::<ActiveEnchantments>() else {
@@ -532,7 +534,7 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
             if !matches!(enchantment.trigger, EnchantmentTrigger::OnDemand) {
                 warn_once!(
                     "TriggerEnchantmentMessage: enchantment '{}' on {:?} is not OnDemand — ignoring.",
-                    msg.name, target
+                    msg.name, source
                 );
                 continue;
             }
@@ -542,7 +544,7 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
                     rune.system_id,
                     CastContext {
                         caster: applier,
-                        targets: vec![target],
+                        targets: msg.targets.clone(),
                     },
                 ));
             }

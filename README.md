@@ -21,12 +21,27 @@ custom runes, creation of a spell, and triggering a cast in a Bevy app.
 
 ```rust
 use bevy::prelude::*;
-use bevy_magic::{MagicPlugin, CastSpellMessage, Spell, Spellbook, Rune, CastContext};
+use bevy_magic::{prelude::*, enchanting::prelude::*};
 
 // --- custom rune types -----------------------------------------------------
 
 #[derive(Debug, Clone, Reflect, Serialize, Deserialize)]
 struct DamageRune { amount: f32 }
+
+#[derive(Debug, Clone, Reflect, Serialize, Deserialize)]
+struct BurningRune { damage_per_tick: f32 }
+
+impl Rune for BurningRune {
+    fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
+        let amount = self.damage_per_tick;
+        Box::new(IntoSystem::into_system(move |In(ctx): In<CastContext>| {
+            for &target in &ctx.targets {
+                println!("burn: {:?} takes {} damage", target, amount);
+            }
+        }))
+    }
+}
+
 
 impl Rune for DamageRune {
     fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
@@ -62,6 +77,17 @@ fn setup(mut commands: Commands, mut assets: ResMut<Assets<Spell>>) {
     let caster = commands.spawn_empty().id();
     let target = commands.spawn_empty().id();
 
+    // apply a timed enchantment on the target for periodic effect
+    commands.apply_enchantment(
+        target,
+        Enchantment::from_runes(
+            "Burning Aura",
+            "Deals damage every second.",
+            caster,
+            vec![Box::new(BurningRune { damage_per_tick: 8.0 })],
+        ),
+    );
+
     // queue a cast message; will run on the next update tick
     commands.write_message(CastSpellMessage {
         caster,
@@ -70,6 +96,12 @@ fn setup(mut commands: Commands, mut assets: ResMut<Assets<Spell>>) {
     });
 }
 
+// For on-demand (event-driven) enchanting, use:
+// commands.trigger_enchantment(source_entity, "Burning Aura", Some(vec![target_entity]));
+// after applying the enchantment with `.with_trigger(EnchantmentTrigger::OnDemand)`.
+
+// `source_entity` is the enchanted object (e.g. sword), and `targets` are the entities
+// affected by the triggered effect (e.g. hit enemy).
 fn on_cast(mut reader: MessageReader<CastSpellMessage>) {
     for msg in reader.read() {
         println!("spell cast by {:?} on {:?}", msg.caster, msg.targets);
