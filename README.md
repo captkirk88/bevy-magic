@@ -13,7 +13,7 @@ It provides abstractions for spells, runes, and a simple message-driven cast pip
 ```toml
 [dependencies]
 bevy = "0.18"
-bevy-magic = { version = "0.18", git = "https://github.com/captkirk88/bevy-magic" }
+bevy-magic = "0.18"
 ```
 
 ## Example
