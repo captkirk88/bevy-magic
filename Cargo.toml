@@ -7,7 +7,7 @@ description = "A Bevy plugin for flexible, data-driven magic systems with enchan
 license = "MIT"
 repository = "https://github.com/captkirk88/bevy-magic"
 categories = ["game-development"]
-keywords = ["bevy", "game-development", "magic", "enchanting","enchantment","spells", "spellcasting", "rpg"]
+keywords = ["bevy", "magic", "spells", "enchanting", "rpg"]
 exclude = ["assets/*", "examples/*", "benches/*", "tests/*"]
 
 [dependencies]
