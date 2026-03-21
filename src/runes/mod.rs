@@ -9,12 +9,20 @@ use serde::de::Error;
 ///
 /// Contains the caster and an arbitrary number of targets, supporting
 /// single-target, multi-target, and self-cast spells uniformly.
+///
+/// `origin` carries a pre-computed world position.  It is primarily used by
+/// post-death (`OnDespawn`) runes that fire after the caster entity is gone,
+/// so rune logic can fall back to this position instead of querying the
+/// (now-despawned) entity's [`Transform`].
 #[derive(Clone, Debug)]
 pub struct CastContext {
     /// The entity that is casting the spell.
     pub caster: Entity,
     /// Every entity targeted by this cast.  May be empty for self-cast spells.
     pub targets: Vec<Entity>,
+    /// Optional world position override.  Populated for `OnDespawn` enchantments
+    /// so runes can locate the origin without a live entity.
+    pub origin: Option<Vec3>,
 }
 
 impl CastContext {
@@ -23,6 +31,7 @@ impl CastContext {
         Self {
             caster,
             targets: Vec::new(),
+            origin: None,
         }
     }
 
@@ -34,6 +43,12 @@ impl CastContext {
 
     pub fn with_target(mut self, target: Entity) -> Self {
         self.targets.push(target);
+        self
+    }
+
+    /// Set the `origin` position override (used by `OnDespawn` runes).
+    pub fn with_origin(mut self, origin: Vec3) -> Self {
+        self.origin = Some(origin);
         self
     }
 }

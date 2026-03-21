@@ -284,6 +284,56 @@ impl Rune for PoisonTickRune {
     }
 }
 
+#[derive(Clone, TypePath)]
+struct ExplosionRune {
+    damage: f32,
+    radius: f32,
+}
+
+impl Rune for ExplosionRune {
+    fn build(&self) -> BoxedSystem<In<CastContext>, ()> {
+        let dmg = self.damage;
+        let radius_sq = self.radius * self.radius;
+        Box::new(IntoSystem::into_system(
+            move |In(ctx): In<CastContext>, mut commands: Commands, caster_tf: Query<&Transform>, mut query: Query<(Entity, &mut Health, &Name, &Transform), With<Enemy>>| {
+                println!("  [ExplosionRune] entity {:?} is exploding", ctx.caster);
+
+                // Use the live transform if available, otherwise fall back to
+                // the pre-death origin snapshot stored in the context (set for
+                // OnDespawn enchantments by flush_despawn_triggers).
+                let caster_transform = if let Ok(tf) = caster_tf.get(ctx.caster) {
+                    *tf
+                } else if let Some(pos) = ctx.origin {
+                    Transform::from_translation(pos)
+                } else {
+                    return;
+                };
+
+                for (target_ent, mut hp, name, target_tf) in &mut query {
+                    if target_ent == ctx.caster {
+                        continue;
+                    }
+                    let dist_sq = caster_transform.translation.distance_squared(target_tf.translation);
+                    if dist_sq > radius_sq {
+                        continue;
+                    }
+
+                    hp.apply_damage(dmg);
+                    println!(
+                        "    [ExplosionRune] {} ({:?}) takes {:.0} explosion -> HP {:.0}/{:.0}",
+                        name, target_ent, dmg, hp.current, hp.max
+                    );
+                    if !hp.is_alive() {
+                        println!("    [ExplosionRune] {} ({:?}) has died", name, target_ent);
+                        commands.entity(target_ent).despawn();
+                    }
+                }
+            },
+        ))
+    }
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // State & Resources
 // ─────────────────────────────────────────────────────────────────────────────
@@ -466,6 +516,19 @@ fn demo_driver(
         ),
     );
 
+    // 6a. Apply an OnDespawn explosion enchantment to the Orc.
+    println!("[Enchant] Applying 'Death Explosion' (on despawn) to Orc Warlord");
+    commands.apply_enchantment(
+        orc,
+        Enchantment::from_runes(
+            "Death Explosion",
+            "Explodes and damages nearby enemies on death.",
+            orc,
+            vec![Box::new(ExplosionRune { damage: 50.0, radius: 8.0 })],
+        )
+        .with_trigger(EnchantmentTrigger::OnDespawn),
+    );
+
     // 7. Enchant the Sword item with an OnDemand trigger — fires only when the
     //    sword hits something, not on a fixed timer.
     println!("[Enchant] Enchanting 'Flameburst Sword' with 'Flame Edge' (OnDemand)");
@@ -564,17 +627,6 @@ fn tick_frame(mut frame: ResMut<FrameCounter>) {
     frame.0 += 1;
 }
 
-fn cleanup_dead_enchantments(
-    mut commands: Commands,
-    query: Query<(Entity, &Health), With<Enemy>>,
-) {
-    for (entity, hp) in &query {
-        if !hp.is_alive() {
-            commands.entity(entity).remove::<ActiveEnchantments>();
-        }
-    }
-}
-
 fn exit_after_max_frames(frame: Res<FrameCounter>, mut exit: MessageWriter<AppExit>) {
     if frame.0 >= MAX_FRAMES {
         println!("\n=== Demo complete ({} frames). Goodbye! ===", frame.0);
@@ -608,7 +660,6 @@ fn main() {
             (
                 demo_driver,
                 dispel_after_delay,
-                cleanup_dead_enchantments,
                 print_status,
                 tick_frame,
                 exit_after_max_frames,

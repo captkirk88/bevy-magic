@@ -12,10 +12,11 @@ use bevy::{
 
 use crate::{
     enchanting::{
-        apply_enchantments, remove_enchantments, tick_enchantments, trigger_enchantments,
-        ApplyEnchantmentCursor, ApplyEnchantmentMessage,
-        RemoveEnchantmentCursor, RemoveEnchantmentMessage,
-        TriggerEnchantmentCursor, TriggerEnchantmentMessage,
+        ActiveEnchantments, ApplyEnchantmentCursor, ApplyEnchantmentMessage,
+        EnchantmentTrigger, PendingDespawnTriggers, RemoveEnchantmentCursor,
+        RemoveEnchantmentMessage, TriggerEnchantmentCursor, TriggerEnchantmentMessage,
+        apply_enchantments, flush_despawn_triggers, ondespawn_trigger_enchantments,
+        remove_enchantments, tick_enchantments, trigger_enchantments,
     },
     runes::{ActiveSpells, CastContext, Rune, RuneRegistry},
     spell::{Spell, SpellAssetLoader},
@@ -141,6 +142,8 @@ impl Plugin for MagicPlugin {
             .init_resource::<ApplyEnchantmentCursor>()
             .init_resource::<RemoveEnchantmentCursor>()
             .init_resource::<TriggerEnchantmentCursor>()
+            .init_resource::<PendingDespawnTriggers>()
+            .add_observer(ondespawn_trigger_enchantments)
             .add_systems(
                 Update,
                 (
@@ -151,6 +154,7 @@ impl Plugin for MagicPlugin {
                     remove_enchantments,
                     tick_enchantments,
                     trigger_enchantments,
+                    flush_despawn_triggers,
                 )
                     .chain(),
             );
@@ -264,6 +268,7 @@ pub fn execute_cast_spell_events(world: &mut World) {
         let context = CastContext {
             caster: message.caster,
             targets: message.targets.clone(),
+            origin: None,
         };
 
         // 1. Build boxed systems for cache misses while holding borrows.
@@ -326,6 +331,29 @@ pub fn execute_cast_spell_events(world: &mut World) {
                 active.add_spell(context.clone(), rune_systems);
                 entity.insert(active);
             }
+        }
+
+        // 5. Fire any OnCast enchantments on the caster immediately.
+        let mut oncast_systems: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
+        if let Some(active_enchantments) = world.entity(message.caster).get::<ActiveEnchantments>() {
+            for enchantment in active_enchantments.enchantments.iter() {
+                if matches!(enchantment.trigger, EnchantmentTrigger::OnCast) {
+                    for rune in &enchantment.rune_executions {
+                        oncast_systems.push((
+                            rune.system_id,
+                            CastContext {
+                                caster: message.caster,
+                                targets: message.targets.clone(),
+                                origin: None,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        for (system_id, context) in oncast_systems {
+            let _ = world.run_system_with(system_id, context);
         }
     }
 }

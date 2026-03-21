@@ -60,8 +60,7 @@ use bevy::{
 };
 
 use crate::{
-    runes::{BoxedRune, CastContext},
-    spell::Spell,
+    runes::{BoxedRune, CastContext}, spell::Spell
 };
 
 pub mod prelude {
@@ -92,8 +91,18 @@ pub enum EnchantmentTrigger {
     Timed,
     /// Runes fire only when a [`TriggerEnchantmentMessage`] names this enchantment.
     /// The enchantment persists until explicitly removed.
-    OnDemand,
-}
+    OnDemand,    /// Runes fire whenever `source` casts a spell.
+    ///
+    /// `source` is the entity holding the enchantment. Targets are the spell targets.
+    OnCast,
+    /// Runes fire when the source entity dies/despawns.
+    ///
+    /// This can be used for death throes and explosive weapons.
+    OnDespawn,
+    /// Runes fire when the source enters/triggers an area event.
+    ///
+    /// Use `commands.trigger_enchantment(source, name, Some(area_targets))`.
+    OnTriggerArea,}
 
 // ---------------------------------------------------------------------------
 // EnchantmentSource
@@ -249,6 +258,12 @@ pub struct ActiveEnchantmentEntry {
     pub(crate) applier: Entity,
     pub(crate) trigger: EnchantmentTrigger,
     pub(crate) rune_executions: Vec<ActiveEnchantRune>,
+}
+
+impl ActiveEnchantmentEntry {
+    pub fn trigger(&self) -> EnchantmentTrigger {
+        self.trigger.clone()
+    }
 }
 
 pub(crate) struct ActiveEnchantRune {
@@ -450,11 +465,34 @@ pub(crate) fn tick_enchantments(world: &mut World) {
 
     let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
     let mut entities_to_cleanup: Vec<Entity> = Vec::new();
+    // (entity, spawn_origin, [(applier, system_id)]) — snapshotted before rune systems run
+    let mut despawn_watchlist: Vec<(Entity, Vec3, Vec<(Entity, SystemId<In<CastContext>>)>)> =
+        Vec::new();
 
-    for (entity, mut active) in world.query::<(Entity, &mut ActiveEnchantments)>().iter_mut(world) {
+    for (entity, mut active, maybe_tf) in world
+        .query::<(Entity, &mut ActiveEnchantments, Option<&Transform>)>()
+        .iter_mut(world)
+    {
+        // Snapshot OnDespawn rune info while the entity + transform are still live.
+        let ondespawn_runes: Vec<(Entity, SystemId<In<CastContext>>)> = active
+            .enchantments
+            .iter()
+            .filter(|e| matches!(e.trigger, EnchantmentTrigger::OnDespawn))
+            .flat_map(|e| {
+                let applier = e.applier;
+                e.rune_executions.iter().map(move |r| (applier, r.system_id))
+            })
+            .collect();
+        if !ondespawn_runes.is_empty() {
+            let origin = maybe_tf.map(|tf| tf.translation).unwrap_or(Vec3::ZERO);
+            despawn_watchlist.push((entity, origin, ondespawn_runes));
+        }
+
         active.enchantments.retain_mut(|enchantment| {
-            // OnDemand enchantments are never pruned by the timer path.
-            if matches!(enchantment.trigger, EnchantmentTrigger::OnDemand) {
+            // Only Timed enchantments are driven by the timer path.
+            // OnDemand, OnDespawn, OnCast, and OnTriggerArea fire through
+            // their own dedicated paths and must never be auto-ticked here.
+            if !matches!(enchantment.trigger, EnchantmentTrigger::Timed) {
                 return true;
             }
 
@@ -467,6 +505,7 @@ pub(crate) fn tick_enchantments(world: &mut World) {
                         CastContext {
                             caster: applier,
                             targets: vec![entity],
+                            origin: None,
                         },
                     ));
                     if rune.repeating {
@@ -496,6 +535,21 @@ pub(crate) fn tick_enchantments(world: &mut World) {
     for (system_id, mut context) in systems_to_run {
         context.targets.retain(|&e| world.get_entity(e).is_ok());
         let _ = world.run_system_with(system_id, context);
+    }
+
+    // Fire OnDespawn runes for any entity that was just killed by the rune systems above.
+    // The entity is gone from the world — use the pre-death origin snapshot in CastContext.
+    for (entity, origin, rune_infos) in despawn_watchlist {
+        if world.get_entity(entity).is_err() {
+            for (caster, system_id) in rune_infos {
+                let ctx = CastContext {
+                    caster,
+                    targets: vec![],
+                    origin: Some(origin),
+                };
+                let _ = world.run_system_with(system_id, ctx);
+            }
+        }
     }
 }
 
@@ -531,9 +585,9 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
             if enchantment.name != msg.name {
                 continue;
             }
-            if !matches!(enchantment.trigger, EnchantmentTrigger::OnDemand) {
+            if matches!(enchantment.trigger, EnchantmentTrigger::Timed) {
                 warn_once!(
-                    "TriggerEnchantmentMessage: enchantment '{}' on {:?} is not OnDemand — ignoring.",
+                    "TriggerEnchantmentMessage: enchantment '{}' on {:?} is Timed — use direct timed flow.",
                     msg.name, source
                 );
                 continue;
@@ -545,6 +599,7 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
                     CastContext {
                         caster: applier,
                         targets: msg.targets.clone(),
+                        origin: None,
                     },
                 ));
             }
@@ -554,5 +609,66 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
     for (system_id, mut context) in systems_to_run {
         context.targets.retain(|&e| world.get_entity(e).is_ok());
         let _ = world.run_system_with(system_id, context);
+    }
+}
+
+/// Snapshot of one `OnDespawn` rune to be fired after the entity is gone.
+pub(crate) struct PendingDespawnRune {
+    pub system_id: SystemId<In<CastContext>>,
+    pub caster: Entity,
+    pub origin: Vec3,
+}
+
+/// Buffer populated by [`ondespawn_trigger_enchantments`] and drained by
+/// [`flush_despawn_triggers`] later in the same frame.
+#[derive(Resource, Default)]
+pub(crate) struct PendingDespawnTriggers(pub Vec<PendingDespawnRune>);
+
+/// Observer that fires when an entity with `OnDespawn` enchantments is
+/// despawned.  Snapshots the rune system IDs and the entity's world position
+/// into [`PendingDespawnTriggers`] so they can be executed after the entity
+/// is fully removed.
+pub(crate) fn ondespawn_trigger_enchantments(
+    event: On<Despawn>,
+    mut pending: ResMut<PendingDespawnTriggers>,
+    query: Query<(Entity, &ActiveEnchantments, Option<&Transform>)>,
+) {
+    let Ok((_entity, active, maybe_tf)) = query.get(event.entity) else {
+        return;
+    };
+    let origin = maybe_tf.map(|tf| tf.translation).unwrap_or(Vec3::ZERO);
+
+    for enchantment in &active.enchantments {
+        if !matches!(enchantment.trigger, EnchantmentTrigger::OnDespawn) {
+            continue;
+        }
+        let caster = enchantment.applier;
+        for rune in &enchantment.rune_executions {
+            pending.0.push(PendingDespawnRune {
+                system_id: rune.system_id,
+                caster,
+                origin,
+            });
+        }
+    }
+}
+
+/// Drains [`PendingDespawnTriggers`] and runs each queued rune system.
+///
+/// Runs at the end of the `Update` chain — after the tick and trigger systems
+/// — so it executes in the same frame as the despawn.
+pub(crate) fn flush_despawn_triggers(world: &mut World) {
+    let pending = world
+        .remove_resource::<PendingDespawnTriggers>()
+        .unwrap_or_default();
+    world.insert_resource(PendingDespawnTriggers::default());
+
+    for rune in pending.0 {
+        let ctx = CastContext {
+            caster: rune.caster,
+            targets: vec![],
+            origin: Some(rune.origin),
+        };
+        let _ = world.run_system_with(rune.system_id, ctx);
     }
 }

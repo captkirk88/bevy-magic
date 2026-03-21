@@ -22,8 +22,7 @@ pub trait CommandsExt {
     /// Remove the enchantment named `name` from `target`.
     fn remove_enchantment(&mut self, target: Entity, name: impl Into<String>) -> &mut Self;
 
-    /// Manually fire the runes of an [`crate::enchanting::EnchantmentTrigger::OnDemand`]
-    /// enchantment named `name` on `source`, affecting `targets`.
+    /// Manually fire the runes enchantment named `name` on `source`, affecting `targets`.
     fn trigger_enchantment(
         &mut self,
         source: Entity,
