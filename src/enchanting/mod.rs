@@ -242,13 +242,13 @@ pub(crate) fn apply_enchantments(world: &mut World) {
         let target = msg.target;
         let enchantment = Arc::clone(&msg.enchantment);
 
-        // Skip if the target entity doesn't exist. This can happen if an enchantment is applied to an entity that is despawned before the message is processed.
-        if world.get_entity(target).is_err() {
-            continue;
-        }
-
         // Only process entities that opted in.
-        if world.entity(target).get::<Enchantable>().is_none() {
+        let target_entity = match world.get_entity(target) {
+            Ok(ent) => ent,
+            Err(_) => continue,
+        };
+
+        if target_entity.get::<Enchantable>().is_none() {
             warn_once!(
                 "ApplyEnchantmentMessage: entity {:?} does not have the Enchantable component — ignoring.",
                 target
