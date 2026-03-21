@@ -1,6 +1,8 @@
 # bevy-magic
 
-`bevy-magic` is a lightweight spellcasting system built on [Bevy](https://bevyengine.org/).
+*Education is experience, and the essence of experience is self-reliance. - "The Once and Future King" by T.H. White*
+
+A lightweight spellcasting system built on [Bevy](https://bevyengine.org/).
 It provides abstractions for spells, runes, and a simple message-driven cast pipeline.
 
 > [!NOTE]
