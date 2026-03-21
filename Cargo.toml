@@ -2,6 +2,7 @@
 name = "bevy-magic"
 version = "0.18.0"
 edition = "2024"
+rust-version = "1.93"
 authors = ["Kirk <github.com/captkirk88>"]
 description = "A Bevy plugin for flexible, data-driven magic systems with enchanting and spellcasting."
 license = "MIT"
