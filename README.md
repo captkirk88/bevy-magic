@@ -2,6 +2,10 @@
 
 *Education is experience, and the essence of experience is self-reliance. - "The Once and Future King" by T.H. White*
 
+[![Crates.io](https://img.shields.io/crates/v/bevy-magic.svg)](https://crates.io/crates/bevy-magic)
+[![docs.rs](https://docs.rs/bevy-magic/badge.svg)](https://docs.rs/bevy-magic)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A lightweight spellcasting system built on [Bevy](https://bevyengine.org/).
 It provides abstractions for spells, runes, and a simple message-driven cast pipeline.
 
