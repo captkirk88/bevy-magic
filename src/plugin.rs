@@ -234,7 +234,8 @@ fn tick_spell_executions(world: &mut World) {
     }
 
     // Run collected systems after releasing borrows
-    for (system_id, context) in systems_to_run {
+    for (system_id, mut context) in systems_to_run {
+        context.targets.retain(|&e| world.get_entity(e).is_ok());
         let _ = world.run_system_with(system_id, context);
     }
 }

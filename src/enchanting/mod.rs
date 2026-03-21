@@ -491,7 +491,8 @@ pub(crate) fn tick_enchantments(world: &mut World) {
         }
     }
 
-    for (system_id, context) in systems_to_run {
+    for (system_id, mut context) in systems_to_run {
+        context.targets.retain(|&e| world.get_entity(e).is_ok());
         let _ = world.run_system_with(system_id, context);
     }
 }
@@ -548,7 +549,8 @@ pub(crate) fn trigger_enchantments(world: &mut World) {
         }
     }
 
-    for (system_id, context) in systems_to_run {
+    for (system_id, mut context) in systems_to_run {
+        context.targets.retain(|&e| world.get_entity(e).is_ok());
         let _ = world.run_system_with(system_id, context);
     }
 }
