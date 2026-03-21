@@ -322,16 +322,10 @@ pub(crate) struct TriggerEnchantmentCursor(pub MessageCursor<TriggerEnchantmentM
 /// Silently ignores messages whose target lacks the [`Enchantable`] component or
 /// whose [`Spell`] asset is not yet loaded.
 pub(crate) fn apply_enchantments(world: &mut World) {
-    let mut cursor = world
-        .remove_resource::<ApplyEnchantmentCursor>()
-        .unwrap_or_default();
-
-    let messages: Vec<ApplyEnchantmentMessage> = {
+    let messages: Vec<ApplyEnchantmentMessage> = world.resource_scope(|world, mut cursor: Mut<ApplyEnchantmentCursor>| {
         let messages_res = world.resource::<Messages<ApplyEnchantmentMessage>>();
         cursor.0.read(messages_res).cloned().collect()
-    };
-
-    world.insert_resource(cursor);
+    });
 
     for msg in messages {
         let target = msg.target;
@@ -434,16 +428,10 @@ pub(crate) fn apply_enchantments(world: &mut World) {
 /// Processes pending [`RemoveEnchantmentMessage`]s, dropping matching enchantment
 /// slots from the target entity's [`ActiveEnchantments`].
 pub(crate) fn remove_enchantments(world: &mut World) {
-    let mut cursor = world
-        .remove_resource::<RemoveEnchantmentCursor>()
-        .unwrap_or_default();
-
-    let messages: Vec<RemoveEnchantmentMessage> = {
+    let messages: Vec<RemoveEnchantmentMessage> = world.resource_scope(|world, mut cursor: Mut<RemoveEnchantmentCursor>| {
         let messages_res = world.resource::<Messages<RemoveEnchantmentMessage>>();
         cursor.0.read(messages_res).cloned().collect()
-    };
-
-    world.insert_resource(cursor);
+    });
 
     for msg in messages {
         if let Ok(mut entity_mut) = world.get_entity_mut(msg.target) {
@@ -559,16 +547,10 @@ pub(crate) fn tick_enchantments(world: &mut World) {
 /// The enchantment persists after firing; send a [`RemoveEnchantmentMessage`]
 /// to tear it down explicitly.
 pub(crate) fn trigger_enchantments(world: &mut World) {
-    let mut cursor = world
-        .remove_resource::<TriggerEnchantmentCursor>()
-        .unwrap_or_default();
-
-    let messages: Vec<TriggerEnchantmentMessage> = {
+    let messages: Vec<TriggerEnchantmentMessage> = world.resource_scope(|world, mut cursor: Mut<TriggerEnchantmentCursor>| {
         let messages_res = world.resource::<Messages<TriggerEnchantmentMessage>>();
         cursor.0.read(messages_res).cloned().collect()
-    };
-
-    world.insert_resource(cursor);
+    });
 
     let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
 
@@ -658,12 +640,11 @@ pub(crate) fn ondespawn_trigger_enchantments(
 /// Runs at the end of the `Update` chain — after the tick and trigger systems
 /// — so it executes in the same frame as the despawn.
 pub(crate) fn flush_despawn_triggers(world: &mut World) {
-    let pending = world
-        .remove_resource::<PendingDespawnTriggers>()
-        .unwrap_or_default();
-    world.insert_resource(PendingDespawnTriggers::default());
+    let runes = world.resource_scope(|_world, mut pending: Mut<PendingDespawnTriggers>| {
+        std::mem::take(&mut pending.0)
+    });
 
-    for rune in pending.0 {
+    for rune in runes {
         let ctx = CastContext {
             caster: rune.caster,
             targets: vec![],

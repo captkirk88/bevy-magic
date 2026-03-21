@@ -259,17 +259,10 @@ fn tick_spell_executions(world: &mut World) {
 
 /// Exclusive-world system that processes every pending [`CastSpellMessage`].
 pub fn execute_cast_spell_events(world: &mut World) {
-    // --- Move cursor out so we can borrow Messages at the same time ----------
-    let mut cursor = world
-        .remove_resource::<SpellCastCursor>()
-        .unwrap_or_default();
-
-    let messages: Vec<CastSpellMessage> = {
+    let messages: Vec<CastSpellMessage> = world.resource_scope(|world, mut cursor: Mut<SpellCastCursor>| {
         let messages_res = world.resource::<Messages<CastSpellMessage>>();
         cursor.0.read(messages_res).cloned().collect()
-    };
-
-    world.insert_resource(cursor);
+    });
 
     // --- Process each cast message -------------------------------------------
     for message in messages {
