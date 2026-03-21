@@ -17,10 +17,6 @@ pub use spellbook::Spellbook;
 
 #[allow(unused)]
 pub mod prelude {
-    pub use crate::enchanting::{
-        ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource,
-        ApplyEnchantmentMessage, RemoveEnchantmentMessage,
-    };
     pub use crate::ext::*;
     pub use crate::{CastSpellMessage, CommandsExt, MagicPlugin, Spell, Spellbook};
 }

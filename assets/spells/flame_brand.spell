@@ -1,0 +1,8 @@
+(
+  name: "Flame Brand",
+  description: "A repeating fire enchantment that sears the target every second.",
+  runes: [
+    (type: "damage", amount: 8.0, damage_type: "fire"),
+    (type: "status", effect: (kind: "burn"), duration_secs: 1.0),
+  ],
+)

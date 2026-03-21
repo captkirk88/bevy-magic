@@ -11,8 +11,8 @@
 //! use std::sync::Arc;
 //! use bevy::prelude::*;
 //! use bevy_magic::{
-//!     enchanting::{Enchantable, Enchantment},
-//!     CommandsExt,
+//!     enchanting::prelude::*,
+//!     prelude::*,
 //! };
 //!
 //! fn setup(mut commands: Commands) {
@@ -48,6 +48,13 @@ use crate::{
     runes::{BoxedRune, CastContext},
     spell::Spell,
 };
+
+pub mod prelude {
+    pub use crate::enchanting::{
+        ActiveEnchantments, Enchantable, Enchantment, EnchantmentSource,
+        ApplyEnchantmentMessage, RemoveEnchantmentMessage,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // EnchantmentSource
@@ -235,9 +242,14 @@ pub(crate) fn apply_enchantments(world: &mut World) {
         let target = msg.target;
         let enchantment = Arc::clone(&msg.enchantment);
 
+        // Skip if the target entity doesn't exist. This can happen if an enchantment is applied to an entity that is despawned before the message is processed.
+        if world.get_entity(target).is_err() {
+            continue;
+        }
+
         // Only process entities that opted in.
         if world.entity(target).get::<Enchantable>().is_none() {
-            warn!(
+            warn_once!(
                 "ApplyEnchantmentMessage: entity {:?} does not have the Enchantable component — ignoring.",
                 target
             );
@@ -259,7 +271,7 @@ pub(crate) fn apply_enchantments(world: &mut World) {
                     let assets = world.resource::<Assets<Spell>>();
                     match assets.get(spell_handle) {
                         None => {
-                            warn!(
+                            warn_once!(
                                 "ApplyEnchantmentMessage: spell asset {:?} is not loaded — ignoring enchantment '{}'.",
                                 spell_handle, enchantment.name
                             );
@@ -354,48 +366,43 @@ pub(crate) fn remove_enchantments(world: &mut World) {
 pub(crate) fn tick_enchantments(world: &mut World) {
     let delta = world.resource::<Time>().delta();
 
-    let targets: Vec<Entity> = world
-        .query_filtered::<Entity, With<ActiveEnchantments>>()
-        .iter(world)
-        .collect();
-
     let mut systems_to_run: Vec<(SystemId<In<CastContext>>, CastContext)> = Vec::new();
+    let mut entities_to_cleanup: Vec<Entity> = Vec::new();
 
-    for &target in &targets {
-        if let Some(mut active) = world.entity_mut(target).get_mut::<ActiveEnchantments>() {
-            active.enchantments.retain_mut(|enchantment| {
-                let applier = enchantment.applier;
-                enchantment.rune_executions.retain_mut(|rune| {
-                    rune.timer.tick(delta);
-                    if rune.timer.just_finished() {
-                        systems_to_run.push((
-                            rune.system_id,
-                            CastContext {
-                                caster: applier,
-                                targets: vec![target],
-                            },
-                        ));
-                        if rune.repeating {
-                            rune.timer.reset();
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
+    for (entity, mut active) in world.query::<(Entity, &mut ActiveEnchantments)>().iter_mut(world) {
+        active.enchantments.retain_mut(|enchantment| {
+            let applier = enchantment.applier;
+            enchantment.rune_executions.retain_mut(|rune| {
+                rune.timer.tick(delta);
+                if rune.timer.just_finished() {
+                    systems_to_run.push((
+                        rune.system_id,
+                        CastContext {
+                            caster: applier,
+                            targets: vec![entity],
+                        },
+                    ));
+                    if rune.repeating {
+                        rune.timer.reset();
                         true
+                    } else {
+                        false
                     }
-                });
-                !enchantment.rune_executions.is_empty()
+                } else {
+                    true
+                }
             });
+            !enchantment.rune_executions.is_empty()
+        });
+
+        if active.enchantments.is_empty() {
+            entities_to_cleanup.push(entity);
         }
     }
 
-    // Remove the component when all enchantments are exhausted.
-    for target in targets {
-        if let Some(active) = world.entity(target).get::<ActiveEnchantments>() {
-            if active.enchantments.is_empty() {
-                world.entity_mut(target).remove::<ActiveEnchantments>();
-            }
+    for entity in entities_to_cleanup {
+        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+            entity_mut.remove::<ActiveEnchantments>();
         }
     }
 
