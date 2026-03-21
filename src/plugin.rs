@@ -87,6 +87,14 @@ impl RuneSystemCache {
     }
 }
 
+/// [`SystemSet`] label for all magic processing systems.
+///
+/// Use `.after(MagicSystems)` on your own `Update` systems to guarantee they
+/// run after spell casting, enchantment ticking, and despawn triggers have all
+/// been resolved in the current frame.
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+pub struct MagicSystems;
+
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
@@ -156,7 +164,8 @@ impl Plugin for MagicPlugin {
                     trigger_enchantments,
                     flush_despawn_triggers,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(MagicSystems),
             );
     }
 }

@@ -655,16 +655,19 @@ fn main() {
         )
         .init_resource::<FrameCounter>()
         .add_systems(Startup, setup)
+        // Input/driver systems run BEFORE magic systems so the messages they
+        // write are processed in the same frame.
         .add_systems(
             Update,
-            (
-                demo_driver,
-                dispel_after_delay,
-                print_status,
-                tick_frame,
-                exit_after_max_frames,
-            )
-                .chain(),
+            (demo_driver, dispel_after_delay).chain().before(MagicSystems),
+        )
+        // Status/bookkeeping systems run AFTER magic systems so they see the
+        // fully resolved state for this frame.
+        .add_systems(
+            Update,
+            (print_status, tick_frame, exit_after_max_frames)
+                .chain()
+                .after(MagicSystems),
         )
         .run();
 }
