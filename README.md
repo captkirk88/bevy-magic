@@ -161,5 +161,12 @@ immediately and once, just like the `DamageRune` example above.
 ## Contributing
 Contributions are welcome! Please open an issue or submit a pull request.
 
+
+## Compatibility
+
+| bevy | bevy-magic |
+|------|------------|
+| 0.18 | 0.18       |
+
 ## License
 MIT License. See the [LICENSE](LICENSE) file for details.
